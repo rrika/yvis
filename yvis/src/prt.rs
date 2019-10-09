@@ -136,26 +136,26 @@ fn prttest() {
 	process_graph(&graph);
 
 	println!("fm see 0");
-	portalvis::geometry::fm_see_through_portals(&vec![
+	portalvis::geometry::lpsolve_see_through_portals(&vec![
 			&graph.winding[0]
 	]);
 	println!("fm see 0-1");
-	portalvis::geometry::fm_see_through_portals(&vec![
+	portalvis::geometry::lpsolve_see_through_portals(&vec![
 			&graph.winding[0],
 			&graph.winding[1]
 	]);
 	println!("fm see 0-2");
-	portalvis::geometry::fm_see_through_portals(&vec![
+	portalvis::geometry::lpsolve_see_through_portals(&vec![
 			&graph.winding[0],
 			&graph.winding[2],
 	]);
 	println!("fm see 2-4");
-	portalvis::geometry::fm_see_through_portals(&vec![
+	portalvis::geometry::lpsolve_see_through_portals(&vec![
 			&graph.winding[0],
 			&graph.winding[2],
 	]);
 	println!("fm see 0-2-4");
-	portalvis::geometry::fm_see_through_portals(&vec![
+	portalvis::geometry::lpsolve_see_through_portals(&vec![
 			&graph.winding[0],
 			&graph.winding[2],
 			&graph.winding[4]

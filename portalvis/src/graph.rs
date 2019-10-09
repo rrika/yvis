@@ -33,10 +33,13 @@ pub struct LeafGraph {
 	pub leaf_from: Vec<Vec<usize>>, // leaf_from[leaf] = [portal, portal, portal]
 	pub leaf_into: Vec<usize>,      // leaf_into[portal] = leaf
 	pub plane:     Vec<Plane>,      // plane[portal]
-	pub winding:   Vec<Winding>     // winding[portal]
+	pub winding:   Vec<Winding>,    // winding[portal]
 }
 
+pub struct ExtraPlanes(Vec<(Plane, Plane)>);
+
 pub struct MightSeeLimiter(BitVec);
+#[derive(Clone)]
 pub struct WindingLimiter(Plane, Winding, Option<Winding>);
 pub struct FMLimiter<'a>(Vec<&'a Winding>);
 
@@ -48,7 +51,8 @@ impl<'a> Limiter<'a> for FMLimiter<'a> {
 	fn traverse(&self, graph: &'a LeafGraph, portal: usize) -> Option<FMLimiter<'a>> {
 		let mut portals = self.0.clone();
 		portals.push(&graph.winding[portal]);
-		if crate::geometry::fm_see_through_portals(&portals) {
+		//if crate::geometry::fm_see_through_portals(&portals) {
+		if crate::geometry::lpsolve_see_through_portals(&portals) {
 			Some(FMLimiter(portals))
 		} else {
 			None
@@ -218,7 +222,19 @@ pub fn process_graph(graph: &LeafGraph) {
 		 	None);
 		// enable this to exhaust your RAM
 		let limiter_fm = FMLimiter(vec![&graph.winding[p]]);
-		let limiter = CombinedLimiter(limiter_w, limiter_fm);
+		let limiter = CombinedLimiter(limiter_w.clone(), limiter_fm);
+		let backup = portalvis[p].clone();
+    	let visited_w = recursive_leaf_flow(
+    		&graph,
+			p,
+			graph.leaf_into[p],
+			&mightsee,
+			limiter_w,
+			&portalflood,
+			&mut portalvis,
+			&progress
+    	);
+    	portalvis[p] = backup;
     	let visited = recursive_leaf_flow(
     		&graph,
 			p,
@@ -229,7 +245,7 @@ pub fn process_graph(graph: &LeafGraph) {
 			&mut portalvis,
 			&progress
     	);
-		println!(" (visited {:?} leafs)", visited);
+		println!(" (visited {:?}/{:?} leafs)", visited, visited_w);
     	//println!(" vis = {:?}", portalvis[p]);
     	progress[p].store(true, Ordering::Release);
     }

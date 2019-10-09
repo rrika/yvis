@@ -1,3 +1,5 @@
+use crate::fm::DerivationTracker;
+
 type N = f64;
 
 #[derive(Clone, Debug)]
@@ -141,9 +143,68 @@ use crate::fm;
 
 pub fn fm_see_through_portals(portals: &Vec<&Winding>) -> bool
 {
-	let mut system: fm::System<u64> = Vec::new();
 	let mut _portalid = 0;
-	let mut constraintid = 0;
+
+	let num_constraints: usize = portals.iter().map(|p| p.points.len()).sum();
+
+	let vis = if num_constraints >= 52 {
+		let mut system: fm::System<Vec<u64>> = Vec::new();
+	   	let mut deriv: fm::LongBitfieldTracker = fm::LongBitfieldTracker (0);
+		for portal in portals {
+			for i in 0..portal.points.len() {
+				let b = portal.points[i];
+				let a = portal.points[(i+1) % portal.points.len()];
+				let x = ncross(a, b);
+				let d = nsub(a, b);
+				let row = [x[0], x[1], x[2], d[0], d[1], d[2]];
+				system.push((row, fm::Relation::GtZero, deriv.new_item()));
+			}
+			_portalid += 1;
+		}
+
+		print!("[{:?} portals {:?} constraints]", portals.len(), system.len());
+		let sol = fm::any_solution(&system, 0, 5, &mut deriv);
+		if let Ok(_) = sol { true } else { false }
+	} else {
+		let mut system: fm::System<u64> = Vec::new();
+	   	let mut deriv: fm::BitfieldTracker = fm::BitfieldTracker (0);
+		for portal in portals {
+			for i in 0..portal.points.len() {
+				let b = portal.points[i];
+				let a = portal.points[(i+1) % portal.points.len()];
+				let x = ncross(a, b);
+				let d = nsub(a, b);
+				let row = [x[0], x[1], x[2], d[0], d[1], d[2]];
+				system.push((row, fm::Relation::GtZero, deriv.new_item()));
+			}
+			_portalid += 1;
+		}
+
+		print!("[{:?} portals {:?} constraints]", portals.len(), system.len());
+		let sol = fm::any_solution(&system, 0, 5, &mut deriv);
+		if let Ok(_) = sol { true } else { false }
+	};
+	println!(" {:}", if vis { "vis" } else { "no" });
+	vis
+}
+
+use lpsolve;
+#[allow(unused_imports)]
+use lpsolve_sys;
+
+pub fn lpsolve_see_through_portals(portals: &Vec<&Winding>) -> bool {
+	let num_constraints: usize = portals.iter().map(|p| p.points.len()).sum();
+	let mut p = lpsolve::Problem::new(num_constraints as i32, 7).unwrap();
+	unsafe { lpsolve_sys::set_verbose(p.to_lprec(), 0); } // shuddup
+
+	let score: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+	p.set_objective_function(&score[..]);
+	p.set_unbounded(1);
+	p.set_unbounded(2);
+	p.set_unbounded(3);
+	p.set_unbounded(4);
+	p.set_unbounded(5);
+	p.set_unbounded(6);
 
 	for portal in portals {
 		for i in 0..portal.points.len() {
@@ -151,18 +212,33 @@ pub fn fm_see_through_portals(portals: &Vec<&Winding>) -> bool
 			let a = portal.points[(i+1) % portal.points.len()];
 			let x = ncross(a, b);
 			let d = nsub(a, b);
-			let row = [x[0], x[1], x[2], d[0], d[1], d[2]];
-			system.push((row, fm::Relation::GtZero, 1u64 << constraintid));
-			constraintid += 1;
+			let row = [0.0, x[0], x[1], x[2], d[0], d[1], d[2], 1.0];
+			//println!("row {:?}", row);
+			p.add_constraint(&row[0..8], 0.5, lpsolve::ConstraintType::Ge);
 		}
-		_portalid += 1;
 	}
+	// println!("current size {:?}x{:?}", p.num_cols(), p.num_rows());
+	// for i in 1..=p.num_rows() {
+	// 	let mut row: [f64; 7] = [0.0; 7];
+	// 	p.get_row(&mut row, i);
+	// 	println!("rrw {:?} {:?}", row, p.get_constraint_type(i));
+	// }
 
-	print!("[{:?} portals {:?} constraints]", portals.len(), system.len());
-
-   	let mut deriv: fm::BitfieldTracker = fm::BitfieldTracker (constraintid);
-	let sol = fm::any_solution(&system, 0, 5, &mut deriv);
-	let vis = if let Ok(_) = sol { true } else { false };
-	println!(" {:}", if vis { "vis" } else { "no" });
+	let vis = match p.solve() {
+		lpsolve::SolveStatus::Optimal => {
+			let mut sol: [f64; 7] = [0.0; 7];
+			p.get_solution_variables(&mut sol);
+			//println!("lpsol {:?}", sol);
+			sol[6] == 0.0
+		},
+		lpsolve::SolveStatus::Infeasible => false,
+		lpsolve::SolveStatus::Unbounded => true, // ???
+		status => {
+			p.write_lp(&mut std::io::stdout());
+			println!("{:?}", status);
+			panic!()
+		}
+	};
+	//println!(" {:}", if vis { "vis" } else { "no" });
 	vis
 }

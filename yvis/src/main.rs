@@ -6,6 +6,7 @@ mod prt;
 use prt::*;
 
 fn main() {
+	//let mut file = File::open("data/de_solace.prt").unwrap();
 	let mut file = File::open("data/de_cinder.prt").unwrap();
 	//let mut file = File::open("data/test.prt").unwrap();
 	let mut prt_solace = String::new();
