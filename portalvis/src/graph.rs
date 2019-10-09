@@ -90,6 +90,17 @@ impl Limiter<'_> for LearningLimiter {
 	}
 }
 
+pub struct CombinedLimiter<'a>(WindingLimiter, FMLimiter<'a>);
+
+impl<'a> Limiter<'a> for CombinedLimiter<'a> {
+	fn traverse(&self, graph: &'a LeafGraph, portal: usize) -> Option<Self> {
+		let update_w = self.0.traverse(graph, portal)?;
+		let update_fm = self.1.traverse(graph, portal)?;
+		Some(CombinedLimiter(update_w, update_fm))
+	}
+}
+
+
 pub fn recursive_leaf_flow<'a, T: Limiter<'a>>(
 	graph: &'a LeafGraph,
 	base: usize,
@@ -201,12 +212,13 @@ pub fn process_graph(graph: &LeafGraph) {
 	for p in 0..nportals2 {
 		print!("recursive_leaf_flow {:?}/{:?}", p, nportals2);
 		let mightsee = &portalflood[p];
-		let limiter = WindingLimiter(
-			graph.plane[p],
-			graph.winding[p].clone(),
-			None);
+		let limiter_w = WindingLimiter(
+		 	graph.plane[p],
+		 	graph.winding[p].clone(),
+		 	None);
 		// enable this to exhaust your RAM
-		// let limiter = FMLimiter(vec![&graph.winding[p]]);
+		let limiter_fm = FMLimiter(vec![&graph.winding[p]]);
+		let limiter = CombinedLimiter(limiter_w, limiter_fm);
     	let visited = recursive_leaf_flow(
     		&graph,
 			p,

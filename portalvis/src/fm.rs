@@ -29,6 +29,11 @@ pub fn dot(lhs: Row, rhs: Row) -> N {
     lhs[5] * rhs[5]
 }
 
+pub fn normalize_row(row: Row) -> Row {
+    let len = dot(row, row).sqrt();
+    if len == 0.0 { row } else { divide_row(row, len) }
+}
+
 pub fn reconstruct<T: DeriviationTracker+Debug>(lhs: Row, recon: &ReconstructionInfo<T>, _debugname: &str, deriv: &mut T)
     -> Result<N, T::T>
 {
@@ -91,6 +96,11 @@ pub trait DeriviationTracker {
     fn new_item(&mut self) -> Self::T;
     fn combine(&mut self, a: Self::T, b: Self::T) -> Self::T;
     fn either(&mut self, a: Self::T, b: Self::T) -> Self::T;
+    fn empty(&mut self) -> Self::T;
+    fn partition(&mut self, a: Self::T, b: Self::T) -> (Self::T, Self::T);
+    fn count(&self, a: Self::T) -> u32;
+
+    fn as_u64(&self, a: Self::T) -> u64;
 }
 
 #[derive(Debug)]
@@ -99,17 +109,27 @@ impl DeriviationTracker for BitfieldTracker {
     type T = u64;
     fn new_item(&mut self) -> u64 {
         self.0 += 1;
+        if self.0 >= 64 { panic!("out of bits") }
         1u64 << self.0-1
     }
     fn combine(&mut self, a: u64, b: u64) -> u64 { a | b }
     fn either(&mut self, a: u64, _b: u64) -> u64 { a } // could pick the one with fewer bits
+    fn empty(&mut self) -> u64 { 0u64 }
+    fn partition(&mut self, a: u64, b: u64) -> (u64, u64) { (a & b, a & !b) }
+    fn count(&self, a: u64) -> u32 { a.count_ones() }
+
+    fn as_u64(&self, a: u64) -> u64 { a }
 }
 
 pub fn fourier_motzkin_elimination<T: DeriviationTracker+Debug>(
     ineqs: &System<T::T>,
     axis: usize,
-    deriv: &mut T
+    deriv: &mut T,
+    t_elim: T::T,
+    t_axis: T::T,
+    t_nonzeroes: &[T::T]
 ) -> (ReconstructionInfo<T>, System<T::T>) {
+
     let mut new_ineqs: System<T::T> = Vec::new();
     let mut reconstruct = ReconstructionInfo {
         gt: Vec::new(),
@@ -119,6 +139,7 @@ pub fn fourier_motzkin_elimination<T: DeriviationTracker+Debug>(
     };
 
     for (row, relation, deriv) in ineqs {
+
         let v = row[axis];
         if v == 0.into() {
             new_ineqs.push((*row, *relation, *deriv));
@@ -137,7 +158,8 @@ pub fn fourier_motzkin_elimination<T: DeriviationTracker+Debug>(
         let mut m: HashMap<[u64; 6], T::T> = HashMap::new();
         unsafe {
             for row in rows {
-                m.entry(std::mem::transmute(row.0))
+                m.entry(std::mem::transmute(normalize_row(row.0)))
+                //m.entry(std::mem::transmute(row.0))
                     .and_modify(|t| *t = deriv.either(*t, row.1))
                     .or_insert(row.1);
             }
@@ -145,10 +167,16 @@ pub fn fourier_motzkin_elimination<T: DeriviationTracker+Debug>(
         }
     };
 
-    dedup(&mut reconstruct.gt);
-    dedup(&mut reconstruct.ge);
-    dedup(&mut reconstruct.lt);
-    dedup(&mut reconstruct.le);
+    reconstruct.gt = dedup(&reconstruct.gt);
+    reconstruct.ge = dedup(&reconstruct.ge);
+    reconstruct.lt = dedup(&reconstruct.lt);
+    reconstruct.le = dedup(&reconstruct.le);
+
+    let t_nonzeroes_mask = {
+        let mut tc = deriv.empty();
+        for t in t_nonzeroes { tc = deriv.combine(*t, tc) }
+        tc
+    };
 
     for (above, below, rel) in [
         (&reconstruct.gt, &reconstruct.lt, Relation::GtZero),
@@ -160,7 +188,37 @@ pub fn fourier_motzkin_elimination<T: DeriviationTracker+Debug>(
             for (onebelow, bt) in *below {
                 let mut new_row = subtract_row(*oneabove, *onebelow);
                 new_row[axis] = 0.0;
-                new_ineqs.push((new_row, *rel, deriv.combine(*at, *bt)));
+
+                let t_ab = deriv.combine(*at, *bt);
+                let t_abe = deriv.combine(t_ab, t_axis);
+
+                // imbert acceleration
+                let mut t_zero = deriv.empty();
+                for axis in 0..6 {
+                    if new_row[axis] == 0.into() {
+                        t_zero = deriv.combine(t_zero, t_nonzeroes[axis])
+                    }
+                }
+                t_zero = deriv.partition(t_zero, t_elim).0;
+                let (e, hz) = deriv.partition(t_abe, t_elim);
+                let (z, h) = deriv.partition(hz, t_nonzeroes_mask);
+                let (io, _) = deriv.partition(z, t_zero);
+                let lhs = 1 + deriv.count(e);
+                let mid = deriv.count(h);
+                if lhs != mid {
+                    let ei = deriv.combine(e, io);
+                    let rhs = 1 + deriv.count(ei);
+                    //println!("{:?} {:?} {:?} E={:016b}  Z={:016b}  H={:016b}  a={:016b} b={:016b}", lhs, mid, rhs,
+                    //    deriv.as_u64(e),
+                    //    deriv.as_u64(z),
+                    //    deriv.as_u64(h),
+                    //    deriv.as_u64(*at),
+                    //    deriv.as_u64(*bt));
+                    if lhs > mid || mid > rhs {
+                        continue
+                    }
+                }
+                new_ineqs.push((new_row, *rel, t_abe));
             }
         }
     }
@@ -176,14 +234,35 @@ pub fn any_solution<T: DeriviationTracker+Debug>(
     let mut ineqs = ineqs.clone();
     let mut reconstruction: Vec<(usize, ReconstructionInfo<T>)> = Vec::new();
 
+    let mut nonzeroes: Vec<T::T> = Vec::new();
+    for axis in 0..6 {
+        let nonzero = deriv.new_item();
+        nonzeroes.push(nonzero);
+        for (row, _relation, t) in &mut ineqs {
+            if row[axis] != 0.into() {
+                *t = deriv.combine(*t, nonzero);
+            }
+        }
+    }
+
+    let mut t_elim = deriv.empty();
+
     for axis in first_axis..=last_axis {
-        println!("axis {:?}, num_ineqs {:?}", axis, ineqs.len());
-        for ineq in &ineqs { println!("{:?}", ineq); } println!("--");
+        let t_axis = deriv.new_item();
+        t_elim = deriv.combine(t_elim, t_axis);
+
+        //println!("axis {:?}, num_ineqs {:?}", axis, ineqs.len());
+        //for ineq in &ineqs { println!("{:?}", ineq); } println!("--");
         reconstruction.push((axis, {
-            let (recon, new_ineqs) = fourier_motzkin_elimination(&ineqs, axis, deriv);
+            let (recon, new_ineqs) = fourier_motzkin_elimination(
+                &ineqs, axis, deriv,
+                t_elim,
+                t_axis,
+                &nonzeroes[..]);
             ineqs = new_ineqs;
             recon
         }));
+        print!("-{:?}", ineqs.len());
     }
     let mut solution: Row = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     for (axis, rinfo) in reconstruction.iter().rev() {

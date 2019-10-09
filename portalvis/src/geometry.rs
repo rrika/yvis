@@ -142,7 +142,8 @@ use crate::fm;
 pub fn fm_see_through_portals(portals: &Vec<&Winding>) -> bool
 {
 	let mut system: fm::System<u64> = Vec::new();
-	let mut portalid = 0;
+	let mut _portalid = 0;
+	let mut constraintid = 0;
 
 	for portal in portals {
 		for i in 0..portal.points.len() {
@@ -151,14 +152,17 @@ pub fn fm_see_through_portals(portals: &Vec<&Winding>) -> bool
 			let x = ncross(a, b);
 			let d = nsub(a, b);
 			let row = [x[0], x[1], x[2], d[0], d[1], d[2]];
-			system.push((row, fm::Relation::GtZero, 1u64 << portalid));
+			system.push((row, fm::Relation::GtZero, 1u64 << constraintid));
+			constraintid += 1;
 		}
-		portalid += 1;
+		_portalid += 1;
 	}
 
-   	let mut deriv: fm::BitfieldTracker = fm::BitfieldTracker (0);
+	print!("[{:?} portals {:?} constraints]", portals.len(), system.len());
+
+   	let mut deriv: fm::BitfieldTracker = fm::BitfieldTracker (constraintid);
 	let sol = fm::any_solution(&system, 0, 5, &mut deriv);
-	println!("see sol {:?}", sol);
-	println!("");
-	if let Ok(_) = sol { true } else { false }
+	let vis = if let Ok(_) = sol { true } else { false };
+	println!(" {:}", if vis { "vis" } else { "no" });
+	vis
 }
