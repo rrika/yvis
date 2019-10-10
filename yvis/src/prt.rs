@@ -1,7 +1,7 @@
+use portalvis::graph::Portal;
 use portalvis::geometry::Winding;
 use portalvis::geometry::plane_through;
 use portalvis::graph::LeafGraph;
-use portalvis::graph::process_graph;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default)]
@@ -92,25 +92,38 @@ pub fn prtlines_to_graph(nleafs: usize, lines: &Vec<PRTLine>) -> LeafGraph {
 
 	let nportals = 2 * lines.len(); // prt portals are two-sided
 	graph.leaf_from.reserve(nleafs);
-	graph.leaf_into.reserve(nportals);
-	graph.plane.reserve(nportals);
-	graph.winding.reserve(nportals);
+	graph.portals.reserve(nportals);
 	for _i in 0..nleafs { graph.leaf_from.push(Vec::new()) }
 
 	for PRTLine(src, dst, points) in lines {
 		let mut points: Vec<[N; 3]> = points.iter().map(|a|[a[0] as N, a[1] as N, a[2] as N]).collect();
-		graph.leaf_from[*src].push(graph.leaf_into.len()); graph.leaf_into.push(*dst);
-		graph.leaf_from[*dst].push(graph.leaf_into.len()); graph.leaf_into.push(*src);
+		let pi = graph.portals.len();
+		graph.leaf_from[*src].push(pi+0);
+		graph.leaf_from[*dst].push(pi+1);
 		points.reverse();
 		let plane = plane_through(points[0], points[1], points[2]);
-		graph.winding.push(Winding{points: points.clone()}); points.reverse();
-		graph.winding.push(Winding{points: points});
-		graph.plane.push(plane);
-		graph.plane.push(-plane);
+		let portal_fwd = Portal {
+			winding: Winding{points: points.clone()},
+			plane:   plane,
+			leaf_from: *src,
+			leaf_into: *dst
+		};
+		points.reverse();
+		let portal_bwd = Portal {
+			winding: Winding{points: points},
+			plane:   -plane,
+			leaf_from: *dst,
+			leaf_into: *src
+		};
+		graph.portals.push(portal_fwd);
+		graph.portals.push(portal_bwd);
 	}
 
 	graph
 }
+
+#[cfg(test)]
+use portalvis::graph::process_graph;
 
 #[test]
 fn prttest() {
@@ -121,9 +134,6 @@ fn prttest() {
 4 1 2 (0 -0.5 -1 ) (0 -0.5 0.5 ) (0 -1 0.5 ) (0 -1 -1 )\r
 4 2 3 (1 1 -1 ) (1 1 1 ) (1 -1 1 ) (1 -1 -1 )\r
 ";
-
-
-
 
     let prt = prt_test;
 
@@ -137,28 +147,28 @@ fn prttest() {
 
 	println!("fm see 0");
 	portalvis::geometry::lpsolve_see_through_portals(&vec![
-			&graph.winding[0]
+			&graph.portals[0].winding
 	]);
 	println!("fm see 0-1");
 	portalvis::geometry::lpsolve_see_through_portals(&vec![
-			&graph.winding[0],
-			&graph.winding[1]
+			&graph.portals[0].winding,
+			&graph.portals[1].winding
 	]);
 	println!("fm see 0-2");
 	portalvis::geometry::lpsolve_see_through_portals(&vec![
-			&graph.winding[0],
-			&graph.winding[2],
+			&graph.portals[0].winding,
+			&graph.portals[2].winding,
 	]);
 	println!("fm see 2-4");
 	portalvis::geometry::lpsolve_see_through_portals(&vec![
-			&graph.winding[0],
-			&graph.winding[2],
+			&graph.portals[0].winding,
+			&graph.portals[2].winding,
 	]);
 	println!("fm see 0-2-4");
 	portalvis::geometry::lpsolve_see_through_portals(&vec![
-			&graph.winding[0],
-			&graph.winding[2],
-			&graph.winding[4]
+			&graph.portals[0].winding,
+			&graph.portals[2].winding,
+			&graph.portals[4].winding
 	]);
 
 	assert!(false);

@@ -1,12 +1,18 @@
 use crate::fm::DerivationTracker;
 
-type N = f64;
+pub type N = f64;
 
 #[derive(Clone, Debug)]
 pub struct Winding { pub points: Vec<[N; 3]> }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct Plane(N, N, N, N);
+pub struct Plane(pub N, pub N, pub N, pub N);
+
+impl Plane {
+	pub fn with_dist(&self, dist: N) -> Plane {
+		Plane(self.0, self.1, self.2, dist)
+	}
+}
 
 impl std::cmp::PartialEq for Plane {
 	fn eq(&self, rhs: &Plane) -> bool {
