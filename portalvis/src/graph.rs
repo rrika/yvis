@@ -186,7 +186,7 @@ pub fn flood(
 
 use std::time::Instant;
 
-pub fn process_graph(graph: &LeafGraph) {
+pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 	let nportals2 = graph.portals.len();
 
 	println!("process_graph: init");
@@ -363,4 +363,8 @@ pub fn process_graph(graph: &LeafGraph) {
     	// println!(" vis = {:?}", portalvis[p]);
     	progress[p].store(true, Ordering::Release);
     }
+
+
+    // todo: downsample from leaf to portal vis to leaf to leaf vis
+    portalvis
 }

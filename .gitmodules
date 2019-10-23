@@ -1,0 +1,4 @@
+[submodule "srctools"]
+	path = srctools
+	url = https://github.com/TeamSpen210/srctools.git
+	branch = dev
