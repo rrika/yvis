@@ -364,7 +364,20 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
     	progress[p].store(true, Ordering::Release);
     }
 
-
-    // todo: downsample from leaf to portal vis to leaf to leaf vis
-    portalvis
+    let nleaves = graph.leaf_from.len();
+	let mut leafvis: Vec<BitVec> = Vec::new();
+	leafvis.resize_with(nleaves, Default::default);
+	for leaf in 0..nleaves {
+		leafvis[leaf].resize(nleaves, false);
+	}
+	for leaf in 0..nleaves {
+		for p in &graph.leaf_from[leaf] {
+			for q in 0..nportals2 {
+				if portalvis[*p][q] {
+					leafvis[leaf][graph.portals[q].leaf_into] = true;
+				}
+			}
+		}
+	}
+    leafvis
 }
