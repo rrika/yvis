@@ -6,7 +6,7 @@ use crate::geometry::clip_hourglass;
 use crate::geometry::all_below;
 use crate::geometry::all_above;
 use crate::geometry::N;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 
@@ -30,7 +30,7 @@ pub fn bitvec_and_and_not(a: &BitVec, b: &BitVec, c: &BitVec) -> (BitVec, bool) 
 	return (o, any)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Portal {
 	pub winding: Winding,
 	pub plane:   Plane,
@@ -38,7 +38,7 @@ pub struct Portal {
 	pub leaf_into: usize
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LeafGraph {
 	pub leaf_from: Vec<Vec<usize>>, // leaf_from[leaf] = [portal, portal, portal]
 	pub portals:   Vec<Portal>
@@ -100,16 +100,6 @@ impl Limiter<'_> for WindingLimiter<'_> {
 	}
 }
 
-pub struct Watcher(u8, u8);
-pub struct LearningLimiter(Vec<Watcher>, BitVec);
-
-
-impl Limiter<'_> for LearningLimiter {
-	fn traverse(&self, _graph: &LeafGraph, _portal: usize) -> Option<Self> {
-		panic!()
-	}
-}
-
 pub struct CombinedLimiter<'a, 'b>(WindingLimiter<'a>, FMLimiter<'b>);
 
 impl<'a, 'b> Limiter<'b> for CombinedLimiter<'a, 'b> {
@@ -119,19 +109,25 @@ impl<'a, 'b> Limiter<'b> for CombinedLimiter<'a, 'b> {
 		Some(CombinedLimiter(update_w, update_fm))
 	}
 }
+impl<'a, A: Limiter<'a>, B: Limiter<'a>> Limiter<'a> for (A, B) {
+	fn traverse(&self, graph: &'a LeafGraph, portal: usize) -> Option<Self> {
+		let update_w = self.0.traverse(graph, portal)?;
+		let update_fm = self.1.traverse(graph, portal)?;
+		Some((update_w, update_fm))
+	}
+}
 
 
 pub fn recursive_leaf_flow<'a, T: Limiter<'a>>(
 	graph: &'a LeafGraph,
-	base: usize,
-	leaf: usize,
-	mightsee: &BitVec,
+	work: &Work,
 	winding_limiter: T,
+	base: usize,
 
-	portalflood: &Vec<BitVec>,
-	portalvis: &mut Vec<BitVec>,
-	progress: &Vec<AtomicBool>) -> usize
-{
+	confirmsee: &mut BitVec,
+	leaf: usize,
+	mightsee: &BitVec
+) -> usize {
 	let mut visited = 0;
 	for pp in &graph.leaf_from[leaf] { // in portals out of leaf
 		let p = *pp;
@@ -141,27 +137,32 @@ pub fn recursive_leaf_flow<'a, T: Limiter<'a>>(
 			//println!("    may not see");
 			continue }
 
-		let localsee = if progress[p].load(Ordering::Acquire) { &portalvis[p] } else { &portalflood[p] };
+		let localsee = work.get_row(p);
 
 		let (new_mightsee, any_unexplored) = bitvec_and_and_not(
 			mightsee,          // visible from base
-			localsee,          // visible from p
-			&portalvis[base]); // but not already confirmed
+			&localsee,          // visible from p
+			&confirmsee); // but not already confirmed
 
 		// println!("  localsee     = {:?}", localsee);
 		// println!("  new mightsee = {:?}", new_mightsee);
 
-		if portalvis[base][p] == true && any_unexplored == false {
+		if confirmsee[p] == true && any_unexplored == false {
 			//println!("    already explored");
 			continue }
 
 		if let Some(new_winding_limiter) = winding_limiter.traverse(graph, p) {
 			//println!("   {{");
-			portalvis[base][p] = true;
-			visited += recursive_leaf_flow(graph, base, graph.portals[p].leaf_into, &new_mightsee, new_winding_limiter,
-				portalflood,
-				portalvis,
-				progress);
+			confirmsee[p] = true;
+			visited += recursive_leaf_flow(
+				graph,
+				&work,
+				new_winding_limiter,
+				base,
+				confirmsee,
+				graph.portals[p].leaf_into,
+				&new_mightsee,
+			);
 			//println!("   }}");
 		}
 	}
@@ -184,35 +185,78 @@ pub fn flood(
 	}
 }
 
-use std::time::Instant;
 
-pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
-	let nportals2 = graph.portals.len();
+pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
+	graph: &'a LeafGraph,
+	work: &Work,
+	limiter: T,
+	base: usize
+) -> (BitVec, usize, usize)
+{
+	let mut basevis: BitVec = Vec::new();
+	basevis.resize_with(graph.portals.len(), Default::default);
+	let nvisited = recursive_leaf_flow(
+		&graph,
+		&work,
+		limiter,
+		base,
+		&mut basevis,
+		graph.portals[base].leaf_into,
+		&work.get_row(base),
+    );
+    let mut nvisible = 0;
+    for target in &basevis {
+    	if *target { nvisible += 1 }
+    }
+    (basevis, nvisible, nvisited-1)
+}
+
+use std::time::Instant;
+use std::thread;
+use std::sync::{RwLock, Arc};
+
+pub struct Work {
+	approx: RwLock<Vec<Arc<BitVec>>>,
+	first_time:     AtomicU64,
+	second_time:    AtomicU64,
+	first_visible:  AtomicU64,
+	second_visible: AtomicU64,
+	first_visited:  AtomicU64,
+	second_visited: AtomicU64,
+}
+
+impl Work {
+	fn get_row(&self, a: usize) -> Arc<BitVec> {
+		Arc::clone(&self.approx.read().unwrap()[a])
+	}
+	fn set_row(&self, a: usize, data: Arc<BitVec>) {
+		self.approx.write().unwrap()[a] = data;
+	}
+}
+
+pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
+	let nportals2 = zgraph.portals.len();
 
 	println!("process_graph: init");
 
 	let mut portalflood: Vec<BitVec> = Vec::new();
-	let mut portalvis: Vec<BitVec> = Vec::new();
-	let mut progress: Vec<std::sync::atomic::AtomicBool> = Vec::new();
 	portalflood.resize_with(nportals2, Default::default);
-	portalvis.resize_with(nportals2, Default::default);
-	progress.resize_with(nportals2, || AtomicBool::new(false));
 
 	let mut newdistances: Vec<(N, N)> = Vec::new();
 
 	for i in 0..nportals2 {
-		let plane = &graph.portals[i].plane;
+		let plane = &zgraph.portals[i].plane;
 		let normal = [plane.0, plane.1, plane.2];
 
-		let ahead_dist = graph.advance(i).iter()
-			.map(|j| &graph.portals[*j])
+		let ahead_dist = zgraph.advance(i).iter()
+			.map(|j| &zgraph.portals[*j])
 			.filter(|p| p.plane != -*plane)
 			.flat_map(|p| &p.winding.points)
 			.map(|pt| ndot(normal, *pt))
 			.fold(std::f64::INFINITY, |a, b| a.min(b));
 
-		let behind_dist = graph.retreat(i).iter()
-			.map(|j| &graph.portals[*j])
+		let behind_dist = zgraph.retreat(i).iter()
+			.map(|j| &zgraph.portals[*j])
 			.filter(|p| p.plane != -*plane)
 			.flat_map(|p| &p.winding.points)
 			.map(|pt| ndot(normal, *pt))
@@ -229,7 +273,6 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 	if false {
 		for i in 0..nportals2 {
 			portalflood[i].resize_with(nportals2, || true);
-			portalvis[i].resize_with(nportals2, Default::default);
 		}
 	} else {
 		let mut portalfront: Vec<BitVec> = Vec::new();
@@ -240,7 +283,6 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 			portalfront[i].resize_with(nportals2, || false);
 			portalfront2[i].resize_with(nportals2, || false);
 			portalflood[i].resize_with(nportals2, || false);
-			portalvis[i].resize_with(nportals2, Default::default);
 		}
 		println!("process_graph: portalfront");
 		let now = Instant::now();
@@ -254,22 +296,22 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 					portalfront2[i][j] = false;
 				} else {
 					let f =
-						!all_below(&graph.portals[j].winding.points, graph.portals[i].plane) &&
-						!all_above(&graph.portals[i].winding.points, graph.portals[j].plane);
+						!all_below(&zgraph.portals[j].winding.points, zgraph.portals[i].plane) &&
+						!all_above(&zgraph.portals[i].winding.points, zgraph.portals[j].plane);
 					let f2 =
-						!all_below(&graph.portals[j].winding.points, graph.portals[i].plane.with_dist(newdistances[i].0)) &&
-						!all_above(&graph.portals[i].winding.points, graph.portals[j].plane.with_dist(newdistances[j].1));
+						!all_below(&zgraph.portals[j].winding.points, zgraph.portals[i].plane.with_dist(newdistances[i].0)) &&
+						!all_above(&zgraph.portals[i].winding.points, zgraph.portals[j].plane.with_dist(newdistances[j].1));
 					if f { c+=1; }
 					if f2 { c2+=1; }
 					portalfront[i][j] = f;
 					portalfront2[i][j] = f;
 				}
 			}
-			/*if c2 == c {
-				println!("front {:?} -> {:?}/{:?}/{:?}", i, c2, c, nportals2);
+			if c2 == c {
+				//println!("front {:?} -> {:?}/{:?}/{:?}", i, c2, c, nportals2);
 			} else {
-				println!("front {:?} -> {:?}/{:?}/{:?}  -{:?}", i, c2, c, nportals2, c-c2);
-			}*/
+				//println!("front {:?} -> {:?}/{:?}/{:?}  -{:?}", i, c2, c, nportals2, c-c2);
+			}
 		}
 		println!("process_graph: portalfront took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 
@@ -277,7 +319,7 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 		println!("process_graph: portalflood");
 		let now = Instant::now();
 		for i in 0..nportals2 {
-			flood(&graph, &portalfront, &mut portalflood, i, graph.portals[i].leaf_into);
+			flood(&zgraph, &portalfront, &mut portalflood, i, zgraph.portals[i].leaf_into);
 		}
 		println!("process_graph: portalflood took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 		for i in 0..nportals2 {
@@ -286,14 +328,31 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 		}
 		let now = Instant::now();
 		for i in 0..nportals2 {
-			flood(&graph, &portalfront2, &mut portalflood, i, graph.portals[i].leaf_into);
+			flood(&zgraph, &portalfront2, &mut portalflood, i, zgraph.portals[i].leaf_into);
 		}
 		println!("process_graph: portalflood2 took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 	}
 
-	for p in 0..nportals2 {
+	let portalvis: RwLock<Vec<Arc<BitVec>>> = RwLock::new(
+		portalflood.iter().map(|row| Arc::new(row.clone())).collect()
+	);
+
+	let work = Arc::new(Work {
+		approx: portalvis,
+		first_time: 0.into(),
+		second_time: 0.into(),
+		first_visible: 0.into(),
+		second_visible: 0.into(),
+		first_visited: 0.into(),
+		second_visited: 0.into(),
+	});
+	let work2 = work.clone();
+	let graph: Arc<_> = Arc::new(zgraph.clone());
+	let graph2 = graph.clone();
+	let portalflood2 = portalflood.clone();
+
+	let workunit = move |p: usize| {
 		print!("recursive_leaf_flow {:?}/{:?}", p, nportals2);
-		let mightsee = &portalflood[p];
 		let limiter_w = WindingLimiter(
 			graph.portals[p].plane,
 			graph.portals[p].winding.clone(),
@@ -307,63 +366,89 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 		let limiter_fm = FMLimiter(vec![&graph.portals[p].winding]);
 		let limiter = CombinedLimiter(limiter_w.clone(), limiter_fm.clone());
 		let limiter2 = CombinedLimiter(limiter_w2.clone(), limiter_fm);
-		let backup = portalvis[p].clone();
-    	let visited_w = recursive_leaf_flow(
-    		&graph,
-			p,
-			graph.portals[p].leaf_into,
-			&mightsee,
-			limiter_w,
-			&portalflood,
-			&mut portalvis,
-			&progress
-    	);
-    	portalvis[p] = backup.clone();
-    	let visited_w2 = recursive_leaf_flow(
-    		&graph,
-			p,
-			graph.portals[p].leaf_into,
-			&mightsee,
-			limiter_w2,
-			&portalflood,
-			&mut portalvis,
-			&progress
-    	);
-    	portalvis[p] = backup.clone();
-    	let visited = recursive_leaf_flow(
-    		&graph,
-			p,
-			graph.portals[p].leaf_into,
-			&mightsee,
-			limiter,
-			&portalflood,
-			&mut portalvis,
-			&progress
-    	);
-    	portalvis[p] = backup;
-    	let visited2 = recursive_leaf_flow(
-    		&graph,
-			p,
-			graph.portals[p].leaf_into,
-			&mightsee,
-			limiter2,
-			&portalflood,
-			&mut portalvis,
-			&progress
-    	);
+
+		let mut cc = 0;
+		for v in &*work.get_row(p) {
+			if *v { cc+=1 }
+		}
+
+		let now = Instant::now();
+    	let (row, visible_w, visited_w) = recursive_leaf_flow_simple(
+    		&graph, &work, limiter_w.clone(), p);
+    	let first_pass = now.elapsed().as_micros();
+    	// let (_, visited_w2) = recursive_leaf_flow_simple(
+    	// 	&graph, &work, limiter_w2, p);
+    	// let (row, visited) = recursive_leaf_flow_simple(
+    	// 	&graph, &work, limiter, p);
+    	// let (_, visited2) = recursive_leaf_flow_simple(
+    	// 	&graph, &work, limiter2, p);
+
+    	work.set_row(p, Arc::new(row));
+
+		let now = Instant::now();
+    	let (_, second_visible_w, second_visited_w) = recursive_leaf_flow_simple(
+    		&graph, &work, limiter_w, p);
+    	let second_pass = now.elapsed().as_micros();
+
+    	work.first_time.fetch_add(first_pass as u64, Ordering::SeqCst);
+    	work.first_visible.fetch_add(visible_w as u64, Ordering::SeqCst);
+    	work.first_visited.fetch_add(visited_w as u64, Ordering::SeqCst);
+    	work.second_time.fetch_add(second_pass as u64, Ordering::SeqCst);
+    	work.second_visible.fetch_add(second_visible_w as u64, Ordering::SeqCst);
+    	work.second_visited.fetch_add(second_visited_w as u64, Ordering::SeqCst);
+
     	// compare: winding
     	// against: winding with improvements
     	// against: winding + linear programming
     	// against: winding with improvements + linear programming (should be same as previous)
-    	if visited_w2 != visited_w {
-    		print!("   ");
-    	}
-		println!(" (visited {:?}/{:?}/{:?}/{:?} leafs)", visited2, visited, visited_w2, visited_w);
-		// println!(" (visited {:?} leafs)", visited_w);
+		//println!(" (visited {:?}/{:?}/{:?}/{:?} leafs)", visited2, visited, visited_w2, visited_w);
+		if visited_w != visible_w {
+			println!(" (visited {:?}/{:?} leafs, of which {:?} are visible)", visited_w, cc, visible_w);
+		} else {
+			println!(" (visited {:?}/{:?} leafs)", visited_w, cc);
+		}
     	// println!(" vis = {:?}", portalvis[p]);
-    	progress[p].store(true, Ordering::Release);
-    }
+    };
+	// for p in 0..nportals2 {
+	// 	workunit(p);
+	// }
+	let mut children: Vec<std::thread::JoinHandle<()>> = Vec::new();
+	let arc_workunit: Arc<_> = Arc::new(workunit);
+	for i in 0..4 {
+		let arc_workunit_copy = arc_workunit.clone();
+		children.push(thread::spawn(move || {
+		 	for p in 0..nportals2 {
+		 		if p % 4 == i {
+					arc_workunit_copy(p);
+				}
+			}
+		}));
+	}
+	drop(arc_workunit);
+	for child in children {
+		child.join().expect("child to join paniced instead");
+	}
 
+	let work: Work = Arc::try_unwrap(work2).or(Err(()))
+		.expect("someone is still holding a reference to work2");
+
+	println!("{} {} {} {} {}",
+		work.first_time.load(Ordering::Acquire),
+		work.second_time.load(Ordering::Acquire),
+		work.first_visible.load(Ordering::Acquire),
+		work.first_visited.load(Ordering::Acquire) - work.first_visible.load(Ordering::Acquire),
+		work.second_visited.load(Ordering::Acquire) - work.second_visible.load(Ordering::Acquire)
+	);
+
+	let portalvis: Vec<BitVec> = work.approx.into_inner().expect("someone is still using the RwLock")
+		.into_iter().map(|arc|
+			Arc::try_unwrap(arc)
+			.expect("someone is still holding a reference to a row")).collect();
+
+	(portalvis_to_leafvis(&graph2, &portalflood2), portalvis_to_leafvis(&graph2, &portalvis))
+}
+
+fn portalvis_to_leafvis(graph: &LeafGraph, portalvis: &Vec<BitVec>) -> Vec<BitVec> {
     let nleaves = graph.leaf_from.len();
 	let mut leafvis: Vec<BitVec> = Vec::new();
 	leafvis.resize_with(nleaves, Default::default);
@@ -372,12 +457,13 @@ pub fn process_graph(graph: &LeafGraph) -> Vec<BitVec> {
 	}
 	for leaf in 0..nleaves {
 		for p in &graph.leaf_from[leaf] {
-			for q in 0..nportals2 {
+			for q in 0..portalvis[*p].len() {
 				if portalvis[*p][q] {
 					leafvis[leaf][graph.portals[q].leaf_into] = true;
 				}
 			}
 		}
+		leafvis[leaf][leaf] = true;
 	}
     leafvis
 }

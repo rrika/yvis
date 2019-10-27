@@ -2,6 +2,8 @@ import os.path
 import array
 import argparse
 import subprocess
+import tempfile
+import struct
 import sys
 sys.path.append("srctools")
 import srctools.bsp
@@ -54,33 +56,18 @@ def determine_radius(vmf):
 			except ValueError:
 				continue
 
-def build_cluster_table():
-	clusters = [[] for i in range(numclusters)]
-	for i, leaf in enumerate(dleafs):
-		clusters[leaf.cluster].append(i)
-	return clusters
-
-def iter_leaf_leaf_vis():
-	pass
-
-#def iter_cluster_faces():
-#	firstleafface = dleafs[nClusterLeaf].firstleafface;
-#	numleaffaces = dleafs[nClusterLeaf].numleaffaces
-#	for leafFaceID in range(firstleafface, firstleafface + numleaffaces):
-#		int faceID = dleaffaces[nFirstFaceID + leafFaceID];
-
-# contents, cluster, area_flags, mins, maxs, firstleafface, numleaffaces, firstleafbrush, numleafbrushes, leafWaterDataID
-dleaf_1_fmt = "<ihh3h3hHHHHh"
-
 CONTENTS_SOLID         =  0x001
 CONTENTS_SLIME         =  0x010
 CONTENTS_TESTFOGVOLUME =  0x100
 SURF_WARP              = 0x0008
 
-def calc_visible_fog_volumes(dleaf, iter_leaf_leaf_vis):
+def calc_visible_fog_volumes(dleafs, iter_cluster_vis):
 	# for every water leaf i:
-	#    for every air leaf j:
+	#    for every air leaf j, visible from i:
 	#       dleafs[j].contents |= CONTENTS_TESTFOGVOLUME
+
+	cluster_contains_fog = [False] * numclusters
+	cluster_sees_fog     = [False] * numclusters
 
 	for i in range(numleafs):
 		contents = dleafs[i].contents
@@ -91,16 +78,28 @@ def calc_visible_fog_volumes(dleaf, iter_leaf_leaf_vis):
 		if waterid == -1:
 			continue
 
-		for j in iter_leaf_leaf_vis(i, DVIS_PVS):
-			jcontents = dleafs[j].contents
-			jwaterid  = dleafs[j].leafWaterDataID
+		cluster_contains_fog[dleafs[i].cluster] = True
 
-			if jcontents & CONTENTS_SOLID:
-				continue
-			if jwaterid != -1:
-				continue
+	for i in range(numleafs):
+		jcontents = dleafs[j].contents
+		jwaterid  = dleafs[j].leafWaterDataID
 
-			dleafs[nClusterLeaf].contents |= CONTENTS_TESTFOGVOLUME
+		if jcontents & CONTENTS_SOLID:
+			continue
+		if jwaterid != -1:
+			continue
+
+		cluster_sees_fog[dleafs[i].cluster] = True
+
+	for i in range(clusters):
+		if not cluster_contains_fog[i]:
+			continue
+
+		for j in iter_cluster_vis(i):
+			for k in cluster[j]:
+				dleafs[k].contents |= CONTENTS_TESTFOGVOLUME
+
+
 """
 def CalcDistanceFromLeafToWater(leafNum):
 	int j, k;
@@ -155,18 +154,60 @@ def CalcDistanceFromLeafToWater(leafNum):
 					minDist = dist;
 
 	return minDist
-"""
 
 def calc_distance_from_leaves_to_water():
 	a = array.array('H', [calc_distance_from_leaf_to_water(i) for i in range(numleafs)])
 	if sys.byteorder != 'little':
 		a.byteswap()
 	return a
+"""
 
+from collections import namedtuple
+
+dleaf_fmt = "<ihh3h3hHHHHhh"
+dleaf = namedtuple("dleaf",
+	("contents", "cluster", "area_flags", "min_x", "min_y", "min_z",
+	"max_x", "max_y", "max_z", "firstleafface",	"numleaffaces",
+	"firstleafbrush", "numleafbrushes", "leafWaterDataID", "padding"))
+
+dface_fmt = "<Hbbihhhh4bif2i2iiHHI"
+dface = namedtuple("dface",
+	("planenum", "side", "onNode", "firstedge", "numedges", "texinfo",
+	"dispinfo", "surfaceFogVolumeID", "style0", "style1", "style2",
+	"style3", "lightofs", "area", "luxoffx", "luxoffy", "luxdimx",
+	"luxdimy", "origFace", "NumPrims", "firstPrimID", "smoothingGroups"))
+
+def build_cluster_table(dleafs):
+	numclusters = max(leaf.cluster for leaf in dleafs)+1
+	clusters = [[] for i in range(numclusters)]
+	for i, leaf in enumerate(dleafs):
+		clusters[leaf.cluster].append(i)
+	return clusters
+
+# def clusterfaces(dleafs, dleaffaces, l):
+# 	off = dleafs[l].firstleafface;
+# 	num = dleafs[l].numleaffaces
+# 	return dleaffaces[off:off+num]
+# 
+# def face_bounds(dfaces, dsurfedges, dedges, dvertexes, i):
+# 	face = dfaces[i]
+# 	off = face.firstedge
+# 	num = face.numedges
+# 	x, y, z = [], [], []
+# 	for e in dsurfedges[off:off+num]:
+# 		e = 2 * abs(e)
+# 		a, b = dedges[e:e+2]
+# 		x.append(dvertexes[3*a+0])
+# 		x.append(dvertexes[3*b+0])
+# 		y.append(dvertexes[3*a+1])
+# 		y.append(dvertexes[3*b+1])
+# 		z.append(dvertexes[3*a+2])
+# 		z.append(dvertexes[3*b+2])
+# 	return min(x), max(x), min(y), max(y), min(z), max(z)
 
 def main():
 	args = nostalgia_parser().parse_args()
-	bsp = srctools.bsp.BSP(args.bspfile, srctools.bsp.VERSIONS.PORTAL)
+	bsp = srctools.bsp.BSP(args.bspfile, srctools.bsp.VERSIONS.PORTAL_2)
 
 	if not hasattr(args, "prtfile") or not args.prtfile:
 		if ".bsp" in args.bspfile:
@@ -174,34 +215,54 @@ def main():
 		else:
 			args.prtfile = args.bspfile + ".prt"
 
-	# with open(prtfile, "r") as f:
-	# 	prt = f.read()
-	# nclusters = int(prt.split(" ", 3)[1])
-
 	# to read cluster assignment
 	lump_leafs     = bsp.get_lump(BSP_LUMPS.LEAFS)
+	print("len(lump_leafs) =", len(lump_leafs))
 
 	# to measure distance to water faces
-	lump_faces     = bsp.get_lump(BSP_LUMPS.FACES)
 	lump_leaffaces = bsp.get_lump(BSP_LUMPS.LEAFFACES)
+	lump_faces     = bsp.get_lump(BSP_LUMPS.FACES)
 	lump_edges     = bsp.get_lump(BSP_LUMPS.EDGES)
 	lump_surfedges = bsp.get_lump(BSP_LUMPS.SURFEDGES)
 	lump_vertexes  = bsp.get_lump(BSP_LUMPS.VERTEXES)
 	lump_texinfo   = bsp.get_lump(BSP_LUMPS.TEXINFO)
 
+	dleafs = [dleaf(*x) for x in struct.iter_unpack(dleaf_fmt, lump_leafs)]
+	dfaces = [dface(*x) for x in struct.iter_unpack(dface_fmt, lump_faces)]
+
+	dleaffaces = array.array("h")
+	dleaffaces.frombytes(lump_leaffaces)
+	
+	dedges = array.array("i")
+	dedges.frombytes(lump_edges)
+
+	dsurfedges = array.array("i")
+	dsurfedges.frombytes(lump_surfedges)
+
+	clusters = build_cluster_table(dleafs)
+
 	# to extract a vis radius from an env_fog_controller
 	vmf = bsp.read_ent_data()
 
-	subprocess.check_call(["cargo", "run", "--release", "--manifest-path=yvis/Cargo.toml", args.prtfile])
+	with tempfile.NamedTemporaryFile() as f:
+		subprocess.check_call(["cargo", "run", "--release", "--manifest-path=yvis/Cargo.toml",
+			args.prtfile,
+			f.name])
+		lump_visibility = f.read()
 
-	build_cluster_table()
+	def iter_cluster_vis(c):
+		# TODO
+		if False:
+			yield None
 
-	lump_leafs     = calc_visible_fog_volumes(lump_leafs)
-	lump_waterdist = calc_distance_from_leaves_to_water()
+	#calc_visible_fog_volumes(dleafs, iter_cluster_vis)
+	#lump_waterdist = calc_distance_from_leaves_to_water()
 
-	bsp.get_lump(BSP_LUMPS.LEAFS).data = lump_leafs
-	bsp.get_lump(BSP_LUMPS.VISIBILITY).data = lump_visibility
-	bsp.get_lump(BSP_LUMPS.LEAFMINDISTTOWATER).data = lump_waterdist
+	lump_leafs = b"".join(struct.pack(dleaf_fmt, *l) for l in dleafs)
+
+	bsp.lumps[BSP_LUMPS.LEAFS].data = lump_leafs
+	bsp.lumps[BSP_LUMPS.VISIBILITY].data = lump_visibility
+	#bsp.get_lump(BSP_LUMPS.LEAFMINDISTTOWATER).data = lump_waterdist
 
 	bsp.save(os.path.basename(args.bspfile)+".withvis")
 

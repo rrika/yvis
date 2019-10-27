@@ -21,7 +21,7 @@ fn compress_row(dst: &mut Vec<u8>, row: &Vec<u8>) -> usize {
 	let mut zeroes: u8 = 0;
 	for i in row {
 		if *i != 0 || zeroes == 255 {
-			if zeroes > 0 { dst.push(zeroes) }
+			if zeroes > 0 { dst.push(0); dst.push(zeroes) }
 			dst.push(*i);
 			zeroes = 0;
 		}
@@ -29,9 +29,18 @@ fn compress_row(dst: &mut Vec<u8>, row: &Vec<u8>) -> usize {
 			zeroes += 1;
 		}
 	};
-	if zeroes > 0 { dst.push(zeroes) }
+	if zeroes > 0 { dst.push(0); dst.push(zeroes) }
 	original_len
 }
+
+#[test]
+fn compress_row_test() {
+	let input = vec![69, 69, 0, 0, 0, 0, 4, 20];
+	let mut dst: Vec<u8> = Vec::new();
+	compress_row(&mut dst, &input);
+	assert_eq!(dst, vec![69, 69, 0, 4, 4, 20]);
+}
+
 
 pub fn compress_vis(pvs: &Vec<Vec<bool>>, pas: &Vec<Vec<bool>>) -> Vec<u8> {
 	let n = pvs.len();
