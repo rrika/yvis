@@ -137,12 +137,14 @@ pub fn recursive_leaf_flow<'a, T: Limiter<'a>>(
 			//println!("    may not see");
 			continue }
 
-		let localsee = work.get_row(p);
-
-		let (new_mightsee, any_unexplored) = bitvec_and_and_not(
-			mightsee,          // visible from base
-			&localsee,          // visible from p
-			&confirmsee); // but not already confirmed
+		let (new_mightsee, any_unexplored) = {
+			let guard = &epoch::pin();
+			let localsee = work.get_row(p, guard);
+			bitvec_and_and_not(
+				mightsee,          // visible from base
+				localsee,          // visible from p
+				&confirmsee) // but not already confirmed
+		};
 
 		// println!("  localsee     = {:?}", localsee);
 		// println!("  new mightsee = {:?}", new_mightsee);
@@ -195,6 +197,10 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
 {
 	let mut basevis: BitVec = Vec::new();
 	basevis.resize_with(graph.portals.len(), Default::default);
+	let mightsee: BitVec = {
+		let guard = &epoch::pin();
+		work.get_row(base, guard).clone()
+	};
 	let nvisited = recursive_leaf_flow(
 		&graph,
 		&work,
@@ -202,7 +208,7 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
 		base,
 		&mut basevis,
 		graph.portals[base].leaf_into,
-		&work.get_row(base),
+		&mightsee
     );
     let mut nvisible = 0;
     for target in &basevis {
@@ -212,12 +218,14 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
 }
 
 use std::time::Instant;
-use std::sync::{RwLock, Arc};
+use std::sync::Arc;
 
 use crossbeam::thread;
+use crossbeam::epoch::{self as epoch, Atomic, Owned, Shared, Guard};
+use std::borrow::Borrow;
 
 pub struct Work {
-	approx: RwLock<Vec<Arc<BitVec>>>,
+	approx: Vec<Atomic<BitVec>>,
 	first_time:     AtomicU64,
 	second_time:    AtomicU64,
 	first_visible:  AtomicU64,
@@ -227,11 +235,11 @@ pub struct Work {
 }
 
 impl Work {
-	fn get_row(&self, a: usize) -> Arc<BitVec> {
-		Arc::clone(&self.approx.read().unwrap()[a])
+	fn get_row<'g>(&self, a: usize, guard: &'g Guard) -> &'g BitVec {
+		unsafe { self.approx[a].load(Ordering::SeqCst, guard).as_ref() }.expect("why is any row null?")
 	}
-	fn set_row(&self, a: usize, data: Arc<BitVec>) {
-		self.approx.write().unwrap()[a] = data;
+	fn set_row(&self, a: usize, data: BitVec) {
+		self.approx[a].store(Owned::new(data), Ordering::SeqCst)
 	}
 }
 
@@ -334,9 +342,8 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		println!("process_graph: portalflood2 took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 	}
 
-	let portalvis: RwLock<Vec<Arc<BitVec>>> = RwLock::new(
-		portalflood.iter().map(|row| Arc::new(row.clone())).collect()
-	);
+	let portalvis: Vec<Atomic<BitVec>> =
+		portalflood.iter().map(|row| Atomic::new(row.clone())).collect();
 
 	let work = Work {
 		approx: portalvis,
@@ -368,22 +375,22 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		let _limiter2 = CombinedLimiter(limiter_w2.clone(), limiter_fm);
 
 		let mut cc = 0;
-		for v in &*work.get_row(p) {
-			if *v { cc+=1 }
-		}
+		// for v in work.get_row(p, guard).load() {
+		// 	if *v { cc+=1 }
+		// }
 
 		let now = Instant::now();
     	let (row, visible_w, visited_w) = recursive_leaf_flow_simple(
     		&graph, &work, limiter_w.clone(), p);
     	let first_pass = now.elapsed().as_micros();
     	// let (_, visited_w2) = recursive_leaf_flow_simple(
-    	// 	&graph, &work, limiter_w2, p);
+    	// 	&graph, &woget_rowrk, limiter_w2, p);
     	// let (row, visited) = recursive_leaf_flow_simple(
     	// 	&graph, &work, limiter, p);
     	// let (_, visited2) = recursive_leaf_flow_simple(
     	// 	&graph, &work, limiter2, p);
 
-    	work.set_row(p, Arc::new(row));
+    	work.set_row(p, row);
 
 		let now = Instant::now();
     	let (_, second_visible_w, second_visited_w) = recursive_leaf_flow_simple(
@@ -434,10 +441,10 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		work.second_visited.load(Ordering::Acquire) - work.second_visible.load(Ordering::Acquire)
 	);
 
-	let portalvis: Vec<BitVec> = work.approx.into_inner().expect("someone is still using the RwLock")
-		.into_iter().map(|arc|
-			Arc::try_unwrap(arc)
-			.expect("someone is still holding a reference to a row")).collect();
+	let owned_rows: Vec<Box<BitVec>> = work.approx.into_iter().map(|atomic|
+		unsafe { atomic.load(Ordering::Acquire, &epoch::pin()).into_owned().into_box() }).collect();
+
+	let portalvis: Vec<BitVec> = owned_rows.into_iter().map(|owned| *owned).collect();
 
 	(portalvis_to_leafvis(&graph2, &portalflood2), portalvis_to_leafvis(&graph2, &portalvis))
 }
