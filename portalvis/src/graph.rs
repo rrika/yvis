@@ -212,8 +212,9 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
 }
 
 use std::time::Instant;
-use std::thread;
 use std::sync::{RwLock, Arc};
+
+use crossbeam::thread;
 
 pub struct Work {
 	approx: RwLock<Vec<Arc<BitVec>>>,
@@ -337,7 +338,7 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		portalflood.iter().map(|row| Arc::new(row.clone())).collect()
 	);
 
-	let work = Arc::new(Work {
+	let work = Work {
 		approx: portalvis,
 		first_time: 0.into(),
 		second_time: 0.into(),
@@ -345,13 +346,12 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		second_visible: 0.into(),
 		first_visited: 0.into(),
 		second_visited: 0.into(),
-	});
-	let work2 = work.clone();
+	};
 	let graph: Arc<_> = Arc::new(zgraph.clone());
 	let graph2 = graph.clone();
 	let portalflood2 = portalflood.clone();
 
-	let workunit = move |p: usize| {
+	let workunit = move |work: &Work, p: usize| {
 		print!("recursive_leaf_flow {:?}/{:?}", p, nportals2);
 		let limiter_w = WindingLimiter(
 			graph.portals[p].plane,
@@ -364,8 +364,8 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		 	None,
 		 	Some(&newdistances));
 		let limiter_fm = FMLimiter(vec![&graph.portals[p].winding]);
-		let limiter = CombinedLimiter(limiter_w.clone(), limiter_fm.clone());
-		let limiter2 = CombinedLimiter(limiter_w2.clone(), limiter_fm);
+		let _limiter = CombinedLimiter(limiter_w.clone(), limiter_fm.clone());
+		let _limiter2 = CombinedLimiter(limiter_w2.clone(), limiter_fm);
 
 		let mut cc = 0;
 		for v in &*work.get_row(p) {
@@ -412,25 +412,19 @@ pub fn process_graph<'a>(zgraph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 	// for p in 0..nportals2 {
 	// 	workunit(p);
 	// }
-	let mut children: Vec<std::thread::JoinHandle<()>> = Vec::new();
-	let arc_workunit: Arc<_> = Arc::new(workunit);
-	for i in 0..4 {
-		let arc_workunit_copy = arc_workunit.clone();
-		children.push(thread::spawn(move || {
-		 	for p in 0..nportals2 {
-		 		if p % 4 == i {
-					arc_workunit_copy(p);
+	thread::scope(|s| {
+		let rwork = &work;
+		let rworkunit = &workunit;
+		for i in 0..4 {
+			s.spawn(move |_| {
+			 	for p in 0..nportals2 {
+			 		if p % 4 == i {
+						rworkunit(rwork, p);
+					}
 				}
-			}
-		}));
-	}
-	drop(arc_workunit);
-	for child in children {
-		child.join().expect("child to join paniced instead");
-	}
-
-	let work: Work = Arc::try_unwrap(work2).or(Err(()))
-		.expect("someone is still holding a reference to work2");
+			});
+		}
+	}).unwrap();
 
 	println!("{} {} {} {} {}",
 		work.first_time.load(Ordering::Acquire),
