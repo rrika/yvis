@@ -12,50 +12,70 @@ use std::sync::atomic::Ordering;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-type BitVec = Vec<bool>;
+pub enum MightseeResult<T> {
+	Unchanged,
+	Reduced(T),
+	None,
+}
 
+pub trait Mightsee<Filter, Confirm> : BitVecLike + Sized + Clone + Default where
+	Filter: BitVecLike,
+	Confirm: BitVecLike
+{
+	fn filter_for_unexplored<'a>(&'a self, f: &Filter, c: &Confirm) -> MightseeResult<Self>;
+}
+
+pub trait SetBit {
+	fn set(&mut self, i: usize);
+}
+
+#[derive(Clone, Default)]
+pub struct SparseBits(Vec<usize>);
+
+#[derive(Clone, Default)]
+pub struct ChunkedBits(Vec<(usize, u64)>);
+
+#[derive(Clone, Default)]
+pub struct DenseBits(Vec<u64>);
 
 // following vvis convention:
 //   the normal of a winding (abcdef…) is cross(a-b, c-b)
 //   a prt line "src dst abdefg" has a winding that points from dst to src
 //   
 
-pub fn bitvec_pop(a: &BitVec) -> usize {
-	let mut c = 0;
-	for i in 0..a.len() {
-		if a[i] { c+=1 }
-	}
-	c
+pub fn bitvec_pop(a: &DenseBits) -> usize {
+	a.0.iter().map(|v|u64::count_ones(*v)).sum::<u32>() as usize
 }
-pub fn bitvec_and_not_pop(a: &BitVec, b: &BitVec) -> usize {
-	let mut c = 0;
-	for i in 0..a.len() {
-		if a[i] && !b[i] { c+=1 }
+
+pub fn bitvec_and_not_pop(a: &DenseBits, b: &DenseBits) -> usize {
+	let mut c = 0usize;
+	for i in 0..a.0.len() {
+		c += (a.0[i] & !b.0[i]).count_ones() as usize;
 	}
 	c
 }
 
-pub fn bitvec_and_and_not(a: &BitVec, b: &BitVec, c: &BitVec) -> (BitVec, bool) {
-	let mut o = BitVec::new();
+pub fn bitvec_and_and_not(a: &DenseBits, b: &DenseBits, c: &DenseBits) -> (DenseBits, bool) {
+	let mut o = Vec::new();
 	let mut any = false;
-	o.reserve(a.len());
-	for i in 0..a.len() {
-		let v = a[i] && b[i] && !c[i];
+	o.reserve(a.0.len());
+	for i in 0..a.0.len() {
+		let v = a.0[i] & b.0[i] & !c.0[i];
 		o.push(v);
 
-		if v { any = true }
+		if v != 0 { any = true }
 	}
-	return (o, any)
+	return (DenseBits(o), any)
 }
 
-pub fn bitvec_or(a: &BitVec, b: &BitVec) -> BitVec {
-	let mut o = BitVec::new();
-	o.reserve(a.len());
-	for i in 0..a.len() {
-		let v = a[i] || b[i];
+pub fn bitvec_or(a: &DenseBits, b: &DenseBits) -> DenseBits {
+	let mut o = Vec::new();
+	o.reserve(a.0.len());
+	for i in 0..a.0.len() {
+		let v = a.0[i] | b.0[i];
 		o.push(v);
 	}
-	o
+	DenseBits(o)
 }
 
 #[derive(Clone, Debug)]
@@ -91,18 +111,25 @@ fn renumber(g: &LeafGraph, rv: &Vec<usize>) -> LeafGraph {
 	}
 }
 
-fn reduce_matrix(m: &Vec<BitVec>, r: &Vec<usize>) -> Vec<BitVec> {
-	r.iter().map(|x|
-		r.iter().map(|y|
-			m[*x][*y]
-		).collect::<BitVec>()
-	).collect()
+fn reduce_matrix(m: &Vec<DenseBits>, r: &Vec<usize>) -> Vec<DenseBits> {
+	r.iter().map(|x| {
+		let mut row = DenseBits(Vec::new());
+		row.0.resize((r.len()+63)/64, 0u64);
+		for (i, y) in r.iter().enumerate() {
+			if m[*x][*y] {
+				row.set(i)
+			}
+		}
+		row
+	}).collect()
 }
 
-fn reinject_matrix(m: &mut Vec<BitVec>, n: Vec<BitVec>, p: &Vec<usize>) {
+fn reinject_matrix(m: &mut Vec<DenseBits>, n: Vec<DenseBits>, p: &Vec<usize>) {
 	for i in 0..p.len() {
 		for j in 0..p.len() {
-			m[p[i]][p[j]] = n[i][j]
+			if n[i][j] {
+				m[p[i]].set(p[j])
+			}
 		}
 	}
 }
@@ -159,17 +186,10 @@ impl<'a, A: Limiter<'a>, B: Limiter<'a>> Limiter<'a> for (A, B) {
 	}
 }
 
-use std::borrow::Cow;
 use std::ops::{Index};
 
 pub trait BitVecLike: Sized + Index<usize, Output=bool> {}
 impl<T> BitVecLike for T where T: Sized + Index<usize, Output=bool> {}
-
-#[derive(Clone)]
-pub enum MaybeSparse {
-	Sparse(Vec<usize>),
-	Dense(BitVec)
-}
 
 // always   3566.888ms
 // >= 400	4157.697ms
@@ -179,68 +199,111 @@ pub enum MaybeSparse {
 // >= 100	5468.178ms
 // >=  50   6652.418ms
 
-pub fn maybe_convert(bitvec: &BitVec) -> Option<Vec<usize>> {
+pub fn sparse_convert(bitvec: &DenseBits, n: usize) -> SparseBits {
 	let mut v = Vec::<usize>::new();
-	for i in 0..bitvec.len() {
-		if bitvec[i] {
-			// if v.len() >= 400 {
-			// 	return None
-			// }
-			v.push(i)
-		}
+	for i in 0..n {
+		if bitvec[i] { v.push(i) }
 	}
-	Some(v)
+	SparseBits(v)
+}
+
+pub fn chunked_convert(bitvec: &DenseBits, n: usize) -> ChunkedBits {
+	let v = {
+		let mut v = Vec::<u64>::new();
+		let mut temp = 0u64;
+		for i in 0..n {
+			temp |= 1 << (i % 64);
+			if i % 64 == 63 {
+				v.push(temp);
+				temp = 0;
+			}
+		}
+		if temp != 0{
+			v.push(temp);
+		}
+		v
+	};
+	ChunkedBits(v.into_iter().enumerate().filter(|(i, w)| *w != 0).collect())
 }
 
 const SOMETRUE: bool = true;
 const SOMEFALSE: bool = false;
 
-impl Index<usize> for MaybeSparse {
+impl Index<usize> for SparseBits {
 	type Output = bool;
 	fn index(&self, index: usize) -> &bool {
-		match self {
-			MaybeSparse::Sparse(values) => if values.binary_search(&index).is_ok() { &SOMETRUE } else { &SOMEFALSE },
-			MaybeSparse::Dense(bitvec) => &bitvec[index]
+		if self.0.binary_search(&index).is_ok() { &SOMETRUE } else { &SOMEFALSE }
+	}
+}
+
+impl Index<usize> for ChunkedBits {
+	type Output = bool;
+	fn index(&self, index: usize) -> &bool {
+		let chunkindex = index / 64;
+		let chunk: u64 = if let Ok(index) = self.0.binary_search_by_key(&chunkindex, |&(a,b)| a) {
+			self.0[index].1
+		} else { 0 };
+		if 1 == 1 & (chunk >> (index % 64)) { &SOMETRUE } else { &SOMEFALSE }
+	}
+}
+
+impl Index<usize> for DenseBits {
+	type Output = bool;
+	fn index(&self, index: usize) -> &bool {
+		let chunkindex = index / 64;
+		let chunk = self.0[chunkindex];
+		if 1 == 1 & (chunk >> (index % 64)) { &SOMETRUE } else { &SOMEFALSE }
+	}
+}
+
+impl SetBit for DenseBits {
+	fn set(&mut self, i: usize) {
+		self.0[i / 64] |= 1 << (i % 64)
+	}
+}
+
+impl Mightsee<DenseBits, DenseBits> for DenseBits {
+	fn filter_for_unexplored<'a>(&'a self, f: &DenseBits, c: &DenseBits) -> MightseeResult<DenseBits> {
+		//let p_self = bitvec_pop(self);
+		//let p_f = bitvec_pop(f);
+		//let p_c = bitvec_pop(c);
+		let (nmc, any_unexplored) = bitvec_and_and_not(self, f, c);
+		//let p_nmc = bitvec_pop(&nmc);
+		//println!("&&~ {} {} {} {}", p_self, p_f, p_c, p_nmc);
+		if any_unexplored {
+			MightseeResult::Reduced(nmc)
+		} else {
+			MightseeResult::None
 		}
 	}
 }
 
-pub trait Mightsee<Filter, Confirm> : BitVecLike + Sized + Clone where
-	Filter: BitVecLike,
-	Confirm: BitVecLike
+impl<F, C> Mightsee<F, C> for SparseBits where
+	F: BitVecLike,
+	C: BitVecLike
 {
-	fn filter_for_unexplored<'a>(&'a self, f: &Filter, c: &Confirm) -> (Cow<'a, Self>, bool);
-}
-
-impl Mightsee<BitVec, BitVec> for BitVec {
-	fn filter_for_unexplored<'a>(&'a self, f: &BitVec, c: &BitVec) -> (Cow<'a, BitVec>, bool) {
-		//let p_self = bitvec_pop(self);
-		//let p_f = bitvec_pop(f);
-		//let p_c = bitvec_pop(c);
-		//println!("&&~ {} {} {}", p_self, p_f, p_c);
-		let (nmc, any_unex) = bitvec_and_and_not(self, f, c);
-		(Cow::Owned(nmc), any_unex)
+	fn filter_for_unexplored<'a>(&'a self, f: &F, c: &C) -> MightseeResult<SparseBits> {
+		//println!("&&~ sparse {}", values.len());
+		let newvalues: Vec<usize>
+			= self.0.iter().map(|v|*v).filter(|i: &usize| f[*i] && !c[*i]).collect();
+		if newvalues.len() == 0 {
+			MightseeResult::None
+		} else if self.0.len() == newvalues.len() {
+			MightseeResult::Unchanged
+		} else {
+			MightseeResult::Reduced(SparseBits(newvalues))
+		}
 	}
 }
-
-impl Mightsee<BitVec, BitVec> for MaybeSparse {
-	fn filter_for_unexplored<'a>(&'a self, f: &BitVec, c: &BitVec) -> (Cow<'a, MaybeSparse>, bool) {
-		use MaybeSparse::*;
-		match self {
-			Sparse(values) => {
-				//println!("&&~ sparse {}", values.len());
-				let newvalues: Vec<usize>
-					= values.iter().map(|v|*v).filter(|i: &usize| f[*i] && !c[*i]).collect();
-				let any_unexplored = newvalues.len() > 0;
-				(Cow::Owned(Sparse(newvalues)), any_unexplored)
-			},
-			Dense(bitvec) => {
-				let (r, any_unex) = bitvec.filter_for_unexplored(f, c);
-				match maybe_convert(&r) {
-					Some(newvalues) => (Cow::Owned(Sparse(newvalues)), any_unex),
-					None            => (Cow::Owned(Dense(r.into_owned())), any_unex)
-				}
-			}
+impl Mightsee<DenseBits, DenseBits> for ChunkedBits {
+	fn filter_for_unexplored<'a>(&'a self, f: &DenseBits, c: &DenseBits) -> MightseeResult<ChunkedBits> {
+		//println!("&&~ chunked {}", self.0.len());
+		let newchunks: Vec<(usize, u64)>
+			= self.0.iter().map(|(i, w)| (*i, *w & f.0[*i] & !c.0[*i])).filter(|(i, w)|*w != 0).collect();
+		if  newchunks.len() > 0 {
+			MightseeResult::Reduced(ChunkedBits(newchunks))
+		} else {
+			MightseeResult::None
 		}
 	}
 }
@@ -249,7 +312,7 @@ pub fn recursive_leaf_flow<
 	'a,
 	T: Limiter<'a>,
 	Filter:  BitVecLike,
-	Confirm: BitVecLike + std::ops::IndexMut<usize>,
+	Confirm: BitVecLike + SetBit,
 	Might:   Mightsee<Filter, Confirm>
 >(
 	graph: &'a LeafGraph,
@@ -269,26 +332,39 @@ pub fn recursive_leaf_flow<
 			//println!("    may not see");
 			continue }
 
-		let (new_mightsee, any_unexplored) = {
+		let local_mightsee: Might;
+
+		let rnms: Option<&Might> = match {
 			let guard = &epoch::pin();
 			let localsee = work.get_row(p, guard);
 			mightsee.filter_for_unexplored(localsee, confirmsee)
+		} {
+			MightseeResult::None => {
+				if confirmsee[p] == true { continue }
+				None
+			},
+			MightseeResult::Unchanged => {
+				Some(&mightsee)
+			},
+			MightseeResult::Reduced(r) => {
+				local_mightsee = r;
+				Some(&local_mightsee)
+			}
 		};
-
-		if confirmsee[p] == true && any_unexplored == false {
-			continue }
 
 		if let Some(new_limiter) = limiter.traverse(graph, p) {
 			//println!("   {{");
-			confirmsee[p] = true;
-			visited += recursive_leaf_flow(
-				graph,
-				&work,
-				new_limiter,
-				confirmsee,
-				graph.portals[p].leaf_into,
-				&*new_mightsee
-			);
+			confirmsee.set(p);
+			if let Some(new_mightsee) = rnms {
+				visited += recursive_leaf_flow(
+					graph,
+					&work,
+					new_limiter,
+					confirmsee,
+					graph.portals[p].leaf_into,
+					new_mightsee
+				);
+			}
 			//println!("   }}");
 		}
 	}
@@ -297,8 +373,8 @@ pub fn recursive_leaf_flow<
 
 pub fn flood(
 	graph: &LeafGraph,
-	portalfront: &Vec<BitVec>,
-	portalflood: &mut BitVec,
+	portalfront: &Vec<DenseBits>,
+	portalflood: &mut DenseBits,
 	p: usize,
 	leaf: usize)
 {
@@ -306,7 +382,7 @@ pub fn flood(
 		let q = *rq;
 		if !portalfront[p][q] { continue }
 		if portalflood[q] { continue }
-		portalflood[q] = true;
+		portalflood.set(q);
 		flood(graph, portalfront, portalflood, p, graph.portals[q].leaf_into);
 	}
 }
@@ -314,26 +390,29 @@ pub fn flood(
 
 pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
 	graph: &'a LeafGraph,
-	work: &Work<BitVec>,
+	work: &Work<DenseBits>,
 	limiter: T,
 	base: usize
-) -> (BitVec, usize, usize, usize)
+) -> (DenseBits, usize, usize, usize)
 {
-	let mut basevis: BitVec = Vec::new();
-	basevis.resize_with(graph.portals.len(), Default::default);
-	let mightsee: BitVec = {
+	let nportals = graph.portals.len();
+	let mut basevis: DenseBits = DenseBits(Vec::new());
+	basevis.0.resize((nportals + 63)/64, 0); // nn
+	let mightsee: DenseBits = {
 		let guard = &epoch::pin();
 		work.get_row(base, guard).clone()
 	};
     let npapprox = bitvec_pop(&mightsee);
-	assert_eq!(mightsee.len(), basevis.len());
+	assert_eq!(mightsee.0.len(), basevis.0.len());
 	let nvisited = recursive_leaf_flow(
 		&graph,
 		&work,
 		limiter,
 		&mut basevis,
 		graph.portals[base].leaf_into,
-		&MaybeSparse::Dense(mightsee)
+		//&sparse_convert(&mightsee, nportals)
+		&chunked_convert(&mightsee, nportals)
+		//&mightsee
     );
     let nvisible = bitvec_pop(&basevis);
     (basevis, nvisible, nvisited-1, npapprox)
@@ -410,26 +489,30 @@ fn front_check_dist(p: &Portal, q: &Portal, d: N, e: N) -> bool {
 fn front_check_matrix(
 	graph:        &LeafGraph,
 	newdistances: &Vec<(N, N)>,
-	portalfront:  &mut Vec<BitVec>,
+	portalfront:  &mut Vec<DenseBits>,
 	mode2:        bool
 ) {
 	let np = graph.portals.len();
 	for i in 0..np {
 		for j in 0..np {
-			portalfront[i][j] = i != j && if mode2 {
+			let f = i != j && if mode2 {
 				front_check_dist(&graph.portals[i], &graph.portals[j],
 					newdistances[i].0,
 					newdistances[i].1)
 			} else {
 				front_check(&graph.portals[i], &graph.portals[j])
+			};
+			if f {
+				portalfront[i].set(j)
 			}
 		}
 	}
 }
 
+/*
 use std::collections::BinaryHeap;
 
-pub fn heap_merge(items: &Vec<&BitVec>) -> Vec<Vec<usize>> {
+pub fn heap_merge(items: &Vec<&DenseBits>) -> Vec<Vec<usize>> {
 	let mut cchoices = Vec::new();
 	let m = items[0].len();
 	let mut h: BinaryHeap<(usize, usize, usize)> = BinaryHeap::new();
@@ -442,7 +525,7 @@ pub fn heap_merge(items: &Vec<&BitVec>) -> Vec<Vec<usize>> {
 
 	while h.len() > 0 {
 		let mut choices: Vec<usize> = Vec::new();
-		let mut cbv = BitVec::new();
+		let mut cbv = Vec::new();
 		cbv.resize(m, false);
 		let mut cpop = 0;
 		let mut c2pop = 0;
@@ -483,9 +566,9 @@ pub fn heap_merge(items: &Vec<&BitVec>) -> Vec<Vec<usize>> {
 	}
 
 	cchoices
-}
+}*/
 
-pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
+pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
 	let nportals = graph.portals.len();
 
 	println!("process_graph: init  nportals={}", nportals);
@@ -497,19 +580,19 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		newdistances.push(dd);
 	}
 
-	let mut portalflood: Vec<BitVec> = Vec::new();
+	let mut portalflood: Vec<DenseBits> = Vec::new();
 	portalflood.resize_with(nportals, Default::default);
 
-	let mut portalfront: Vec<BitVec> = Vec::new();
+	let mut portalfront: Vec<DenseBits> = Vec::new();
 	portalfront.resize_with(nportals, Default::default);
 
-	let mut portalvis: Vec<BitVec> = Vec::new();
+	let mut portalvis: Vec<DenseBits> = Vec::new();
 	portalvis.resize_with(nportals, Default::default);
 
 	for i in 0..nportals {
-		portalfront[i].resize(nportals, false);
-		portalflood[i].resize(nportals, false);
-		portalvis[i].resize(nportals, false);
+		portalfront[i].0.resize((nportals+63)/64, 0u64);
+		portalflood[i].0.resize((nportals+63)/64, 0u64);
+		portalvis[i].0.resize((nportals+63)/64, 0u64);
 	}
 
 	println!("process_graph: portalfront");
@@ -525,7 +608,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 	}
 	println!("process_graph: portalflood took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 
-	let workunit = move |graph: &LeafGraph, work: &Work<BitVec>, p: usize| {
+	let workunit = move |graph: &LeafGraph, work: &Work<DenseBits>, p: usize| {
 		let limiter_w = winding_limiter_for(&*graph, p, None); // Some(&newdistances)
 		// let limiter_fm = FMLimiter(vec![&graph.portals[p].winding]);
 		// let limiter =  (limiter_w, limiter_fm);
@@ -567,7 +650,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 	for (i, g) in groups.iter().enumerate() {
 		let mut sub_indices_set = HashSet::<usize>::new();
 		for p in g {
-			for q in 0..portalflood[*p].len() {
+			for q in 0..nportals {
 				if portalflood[*p][q] {
 					sub_indices_set.insert(q);
 				}
@@ -578,7 +661,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		println!("subgraph {}: entry through {}, total {}", i, g.len(), nlportals);
 		let sub_graph = renumber(graph, &sub_indices);
 		let sub_portalflood = reduce_matrix(&portalflood, &sub_indices);
-		let sub_portalvis: Vec<Atomic<BitVec>> =
+		let sub_portalvis: Vec<Atomic<DenseBits>> =
 			sub_portalflood.iter().map(|row| Atomic::new(row.clone())).collect();
 
 		let work = Work {
@@ -605,7 +688,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 		}).unwrap();
 		println!("process_graph: subgraph took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 
-		let owned_rows: Vec<Box<BitVec>> = work.approx.into_iter().map(|atomic|
+		let owned_rows: Vec<Box<DenseBits>> = work.approx.into_iter().map(|atomic|
 			unsafe { atomic.load(Ordering::Acquire, &epoch::pin()).into_owned().into_box() }).collect();
 
 		let owned_rows = owned_rows.into_iter().map(|b|*b).collect();
@@ -621,16 +704,17 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<BitVec>, Vec<BitVec>) {
 	(portalvis_to_leafvis(&graph, &portalflood), portalvis_to_leafvis(&graph, &portalvis))
 }
 
-fn portalvis_to_leafvis(graph: &LeafGraph, portalvis: &Vec<BitVec>) -> Vec<BitVec> {
+fn portalvis_to_leafvis(graph: &LeafGraph, portalvis: &Vec<DenseBits>) -> Vec<Vec<bool>> {
+	let nportals = graph.portals.len();
     let nleaves = graph.leaf_from.len();
-	let mut leafvis: Vec<BitVec> = Vec::new();
+	let mut leafvis: Vec<Vec<bool>> = Vec::new();
 	leafvis.resize_with(nleaves, Default::default);
 	for leaf in 0..nleaves {
 		leafvis[leaf].resize(nleaves, false);
 	}
 	for leaf in 0..nleaves {
 		for p in &graph.leaf_from[leaf] {
-			for q in 0..portalvis[*p].len() {
+			for q in 0..nportals {
 				if portalvis[*p][q] {
 					leafvis[leaf][graph.portals[q].leaf_into] = true;
 				}
