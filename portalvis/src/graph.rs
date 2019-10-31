@@ -299,7 +299,7 @@ impl Mightsee<DenseBits, DenseBits> for ChunkedBits {
 	fn filter_for_unexplored<'a>(&'a self, f: &DenseBits, c: &DenseBits) -> MightseeResult<ChunkedBits> {
 		//println!("&&~ chunked {}", self.0.len());
 		let newchunks: Vec<(usize, u64)>
-			= self.0.iter().map(|(i, w)| (*i, *w & f.0[*i] & !c.0[*i])).filter(|(i, w)|*w != 0).collect();
+			= self.0.iter().map(|(i, w)| (*i, *w & f.0[*i] & !c.0[*i])).filter(|(_, w)|*w != 0).collect();
 		if  newchunks.len() > 0 {
 			MightseeResult::Reduced(ChunkedBits(newchunks))
 		} else {
@@ -388,35 +388,40 @@ pub fn flood(
 }
 
 
-pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>>(
+pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>, F: Fn(usize)->T>(
 	graph: &'a LeafGraph,
 	work: &Work<DenseBits>,
-	limiter: T,
-	base: usize
+	//limiter: T,
+	glimiter: F,
+	bases: &[usize]
 ) -> (DenseBits, usize, usize, usize)
 {
+	let mut npapprox = 0;
+	let mut nvisited = 0;
 	let nportals = graph.portals.len();
 	let mut basevis: DenseBits = DenseBits(Vec::new());
 	basevis.0.resize((nportals + 63)/64, 0); // nn
-	let mightsee: DenseBits = {
-		let guard = &epoch::pin();
-		work.get_row(base, guard).clone()
-	};
-    let npapprox = bitvec_pop(&mightsee);
-	assert_eq!(mightsee.0.len(), basevis.0.len());
-	let nvisited = recursive_leaf_flow(
-		&graph,
-		&work,
-		limiter,
-		&mut basevis,
-		graph.portals[base].leaf_into,
-		//&sparse_convert(&mightsee, nportals)
-		&chunked_convert(&mightsee, nportals)
-		//&mightsee
-    );
-    let nvisible = bitvec_pop(&basevis);
-    (basevis, nvisible, nvisited-1, npapprox)
+	for base in bases {
+		let mightsee: DenseBits = {
+			let guard = &epoch::pin();
+			work.get_row(*base, guard).clone()
+		};
+		npapprox = bitvec_pop(&mightsee);
+		nvisited += recursive_leaf_flow(
+			&graph,
+			&work,
+			glimiter(*base),
+			&mut basevis,
+			graph.portals[*base].leaf_into,
+			//&sparse_convert(&mightsee, nportals)
+			&chunked_convert(&mightsee, nportals)
+			//&mightsee
+		);
+	}
+	let nvisible = bitvec_pop(&basevis);
+	(basevis, nvisible, nvisited-1, npapprox)
 }
+
 
 use std::time::Instant;
 
@@ -448,8 +453,8 @@ fn winding_limiter_for<'a>(graph: &LeafGraph, p: usize, ond: Option<&'a Vec<(N, 
 			pt.plane
 		},
 		pt.winding.clone(),
-	 	None,
-	 	ond)
+		None,
+		ond)
 }
 
 fn distances_for(graph: &LeafGraph, i: usize) -> (N, N) {
@@ -509,12 +514,10 @@ fn front_check_matrix(
 	}
 }
 
-/*
 use std::collections::BinaryHeap;
 
-pub fn heap_merge(items: &Vec<&DenseBits>) -> Vec<Vec<usize>> {
+pub fn heap_merge(items: &Vec<&DenseBits>, m: usize) -> Vec<Vec<usize>> {
 	let mut cchoices = Vec::new();
-	let m = items[0].len();
 	let mut h: BinaryHeap<(usize, usize, usize)> = BinaryHeap::new();
 	for i in 0..items.len() {
 		let ip = bitvec_pop(items[i]);
@@ -525,8 +528,8 @@ pub fn heap_merge(items: &Vec<&DenseBits>) -> Vec<Vec<usize>> {
 
 	while h.len() > 0 {
 		let mut choices: Vec<usize> = Vec::new();
-		let mut cbv = Vec::new();
-		cbv.resize(m, false);
+		let mut cbv = DenseBits(Vec::new());
+		cbv.0.resize((m+63)/64, 0);
 		let mut cpop = 0;
 		let mut c2pop = 0;
 
@@ -539,8 +542,8 @@ pub fn heap_merge(items: &Vec<&DenseBits>) -> Vec<Vec<usize>> {
 			let newpop = cpop + newuniques;
 			let new2pop = c2pop + itempop;
 			if choices.len() > 0 {
-				let totalold = (cpop * cpop) + (c2pop * cpop) + 100 * itempop * itempop;
-				let totalnew = (newpop * newpop) + (new2pop * newpop);
+				let totalold = cpop * (choices.len() + 10);
+				let totalnew = newpop * choices.len();
 				if totalnew > totalold {
 					break
 				}
@@ -566,7 +569,7 @@ pub fn heap_merge(items: &Vec<&DenseBits>) -> Vec<Vec<usize>> {
 	}
 
 	cchoices
-}*/
+}
 
 pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
 	let nportals = graph.portals.len();
@@ -614,31 +617,31 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 		// let limiter =  (limiter_w, limiter_fm);
 
 		// let now = Instant::now();
-    	let (row, visible_w, visited_w, cc) = recursive_leaf_flow_simple(
-    		&graph, &work, limiter_w.clone(), p);
-    	// let (_, visited_w2) = recursive_leaf_flow_simple(
-    	// 	&graph, &woget_rowrk, limiter_w2, p);
-    	// let (row, visited) = recursive_leaf_flow_simple(
-    	// 	&graph, &work, limiter, p);
-    	// let (_, visited2) = recursive_leaf_flow_simple(
-    	// 	&graph, &work, limiter2, p);
+		let (row, visible_w, visited_w, _cc) = recursive_leaf_flow_simple(
+			&graph, &work, |_| limiter_w.clone(), &[p]);
+		// let (_, visited_w2) = recursive_leaf_flow_simple(
+		// 	&graph, &work, limiter_w2, p);
+		// let (row, visited) = recursive_leaf_flow_simple(
+		// 	&graph, &work, limiter, p);
+		// let (_, visited2) = recursive_leaf_flow_simple(
+		// 	&graph, &work, limiter2, p);
 
-    	work.set_row(p, row);
+		work.set_row(p, row);
 
-    	work.first_visible.fetch_add(visible_w as u64, Ordering::SeqCst);
-    	work.first_visited.fetch_add(visited_w as u64, Ordering::SeqCst);
+		work.first_visible.fetch_add(visible_w as u64, Ordering::SeqCst);
+		work.first_visited.fetch_add(visited_w as u64, Ordering::SeqCst);
 
 		// if visited_w != visible_w {
 		// 	println!(" (visited {:?}/{:?} leafs, of which {:?} are visible)", visited_w, cc, visible_w);
 		// } else {
 		// 	println!(" (visited {:?}/{:?} leafs)", visited_w, cc);
 		// }
-    };
+	};
 	// for p in 0..nportals {
 	// 	workunit(p);
 	// }
 
-	//let groups: Vec<Vec<usize>> = heap_merge(&portalflood.iter().map(|a|a).collect());
+	// let groups: Vec<Vec<usize>> = heap_merge(&portalflood.iter().map(|a|a).collect(), nportals);
 	let mut nonzeroes: Vec<usize> = Vec::new();
 	for i in 0..nportals {
 		if graph.leaf_from[graph.portals[i].leaf_into].len() > 0 {
@@ -647,8 +650,12 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 	}
 	let groups: Vec<Vec<usize>> = vec![nonzeroes];
 
+	for i in 0..nportals {
+		portalvis[i].0 = portalflood[i].0.clone();
+	}
+
 	for (i, g) in groups.iter().enumerate() {
-		let mut sub_indices_set = HashSet::<usize>::new();
+		let mut sub_indices_set: HashSet<usize> = g.clone().into_iter().collect::<HashSet<usize>>();
 		for p in g {
 			for q in 0..nportals {
 				if portalflood[*p][q] {
@@ -656,13 +663,23 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 				}
 			}
 		}
-		let sub_indices: Vec<usize> = sub_indices_set.into_iter().collect();
+		for p in g {
+			sub_indices_set.remove(p);
+		}
+		let mut sub_indices: Vec<usize> = g.clone();
 		let nlportals = sub_indices.len();
+		sub_indices.extend(sub_indices_set.into_iter().collect::<Vec<usize>>());
+
 		println!("subgraph {}: entry through {}, total {}", i, g.len(), nlportals);
-		let sub_graph = renumber(graph, &sub_indices);
-		let sub_portalflood = reduce_matrix(&portalflood, &sub_indices);
+		// let sub_graph = renumber(graph, &sub_indices);
+		// let sub_local_indices = (0..nlportals).collect::<Vec<usize>>();
+		// let sub_portalvis_ = reduce_matrix(&portalvis, &sub_indices);
+		let sub_graph = &graph;
+		let sub_local_indices = &sub_indices;
+		let sub_portalvis_ = &portalvis;
+
 		let sub_portalvis: Vec<Atomic<DenseBits>> =
-			sub_portalflood.iter().map(|row| Atomic::new(row.clone())).collect();
+			sub_portalvis_.iter().map(|row| Atomic::new(row.clone())).collect();
 
 		let work = Work {
 			approx: sub_portalvis,
@@ -670,6 +687,12 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 			first_visited: 0.into(),
 		};
 
+		// println!("subgraph {}: pre pass", i);
+		// let (row, visible_w, visited_w, cc) = recursive_leaf_flow_simple(
+		// 	&graph, &work, |p|winding_limiter_for(&*graph, p, None),
+		// 	sub_local_indices);
+
+		println!("subgraph {}: main pass", i);
 		let now = Instant::now();
 		thread::scope(|s| {
 			let rwork = &work;
@@ -677,10 +700,10 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 			let rsubgraph = &sub_graph;
 			for i in 0..4 {
 				s.spawn(move |_| {
-				 	for p in 0..nlportals {
-				 		if p % 4 == i {
+					for p in 0..sub_local_indices.len() {
+						if p % 4 == i {
 							// print!("recursive_leaf_flow {:?}/{:?}\n", p, nlportals);
-							rworkunit(rsubgraph, rwork, p);
+							rworkunit(rsubgraph, rwork, sub_local_indices[p]);
 						}
 					}
 				});
@@ -691,9 +714,12 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 		let owned_rows: Vec<Box<DenseBits>> = work.approx.into_iter().map(|atomic|
 			unsafe { atomic.load(Ordering::Acquire, &epoch::pin()).into_owned().into_box() }).collect();
 
-		let owned_rows = owned_rows.into_iter().map(|b|*b).collect();
+		let owned_rows: Vec<DenseBits> = owned_rows.into_iter().map(|b|*b).collect();
 
-		reinject_matrix(&mut portalvis, owned_rows, &sub_indices);
+		// reinject_matrix(&mut portalvis, owned_rows, &sub_indices);
+		for p in sub_indices {
+			portalvis[p] = owned_rows[p].clone();
+		}
 
 		println!("{} {}",
 			work.first_visible.load(Ordering::Acquire),
@@ -706,7 +732,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<Vec<bool>>, Vec<Vec<bool>
 
 fn portalvis_to_leafvis(graph: &LeafGraph, portalvis: &Vec<DenseBits>) -> Vec<Vec<bool>> {
 	let nportals = graph.portals.len();
-    let nleaves = graph.leaf_from.len();
+	let nleaves = graph.leaf_from.len();
 	let mut leafvis: Vec<Vec<bool>> = Vec::new();
 	leafvis.resize_with(nleaves, Default::default);
 	for leaf in 0..nleaves {
@@ -722,5 +748,5 @@ fn portalvis_to_leafvis(graph: &LeafGraph, portalvis: &Vec<DenseBits>) -> Vec<Ve
 		}
 		leafvis[leaf][leaf] = true;
 	}
-    leafvis
+	leafvis
 }

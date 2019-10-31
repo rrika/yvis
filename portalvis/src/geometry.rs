@@ -147,6 +147,12 @@ pub fn clip_hourglass(source: &Winding, pass: &Winding, target: &Winding) -> Opt
 
 use crate::fm;
 
+impl Winding {
+	pub fn ray_passes(&self, _start: (N, N, N), _dir: (N, N, N)) -> bool {
+		panic!("todo")
+	}
+}
+
 pub fn fm_see_through_portals(portals: &Vec<&Winding>) -> bool
 {
 	let mut _portalid = 0;

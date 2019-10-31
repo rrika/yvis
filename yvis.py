@@ -9,8 +9,13 @@ sys.path.append("srctools")
 import srctools.bsp
 from srctools.bsp import BSP_LUMPS
 
+need_game_files = False
+
 def nostalgia_parser():
-	parser = argparse.ArgumentParser(usage='%(prog)s [-fast] [-game DIRECTORY] bspfile', add_help=False)
+	if need_game_files:
+		parser = argparse.ArgumentParser(usage='%(prog)s [-fast] [-game DIRECTORY] bspfile', add_help=False)
+	else:
+		parser = argparse.ArgumentParser(usage='%(prog)s [-fast] bspfile', add_help=False)
 	common_opts = parser.add_argument_group('Common options')
 	common_opts.add_argument('bspfile')
 	common_opts.add_argument('-h', '--help', action='help',
@@ -22,7 +27,7 @@ def nostalgia_parser():
 	common_opts.add_argument('-low', dest='low', action='store_true',
 		help='Run as an idle-priority process.')
 	common_opts.add_argument('-game', '-vproject', metavar='<directory>',
-		help='Override the VPROJECT environment variable.')
+		help='Override the VPROJECT environment variable.' if need_game_files else argparse.SUPPRESS)
 
 	other_opts = parser.add_argument_group('Other options')
 	other_opts.add_argument('-radius_override', metavar='<n>', dest='radius',
@@ -44,7 +49,8 @@ def plain_parser():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('bspfile')
 	parser.add_argument('--prt', metavar='<prtfile>', dest='prtfile')
-	parser.add_argument('--game', metavar='<directory>', dest='game')
+	if need_game_files:
+		parser.add_argument('--game', metavar='<directory>', dest='game')
 	return parser
 
 
@@ -206,7 +212,7 @@ def build_cluster_table(dleafs):
 # 	return min(x), max(x), min(y), max(y), min(z), max(z)
 
 def main():
-	args = nostalgia_parser().parse_args()
+	args = plain_parser().parse_args()
 	bsp = srctools.bsp.BSP(args.bspfile, srctools.bsp.VERSIONS.PORTAL_2)
 
 	if not hasattr(args, "prtfile") or not args.prtfile:

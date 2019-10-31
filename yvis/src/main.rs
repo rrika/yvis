@@ -57,7 +57,7 @@ fn main() {
 	if let Some(mname) = mname {
 		write_ppm(&mname, &[
 			([255, 255, 255], &pvs),
-			//([80, 80, 60], &pvs_fast)
+			([255, 80, 60], &pvs_fast)
 		]);
 	}
 
