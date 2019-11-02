@@ -37,8 +37,18 @@ impl std::ops::Mul<[N; 3]> for Plane {
 	}
 }
 
-pub fn chop_winding(w: &Winding, p: Plane) -> Option<Winding> {
+pub fn chop_winding(w: &[[N; 3]], p: Plane) -> Option<Option<Winding>> {
 	//println!("chop_winding {:?} {:?}", p, w);
+	let mut not_all = false;
+	for point in w {
+		if p * *point < 0.0 {
+			not_all = true;
+		}
+	}
+	if !not_all {
+		return Some(None)
+	}
+
 	let mut nw: Vec<[N; 3]> = Vec::new();
 	let mut add_point = |p: [N; 3]| {
 		if nw.len() >= 2 {
@@ -52,10 +62,10 @@ pub fn chop_winding(w: &Winding, p: Plane) -> Option<Winding> {
 		}
 		nw.push(p);
 	};
-	let mut i = w.points.len()-1;
-	for j in 0..w.points.len() {
-		let c = w.points[i];
-		let d = w.points[j];
+	let mut i = w.len()-1;
+	for j in 0..w.len() {
+		let c = w[i];
+		let d = w[j];
 		i = j;
 		let a = p * c;
 		let b = p * d;
@@ -81,7 +91,7 @@ pub fn chop_winding(w: &Winding, p: Plane) -> Option<Winding> {
 	}
 	//println!("  chop -> {:?}", nw);
 	if nw.len() >= 3 {
-		Some(Winding{points: nw})
+		Some(Some(Winding{points: nw}))
 	} else {
 		None
 	}
@@ -112,33 +122,37 @@ pub fn all_below(points: &[[N; 3]], plane: Plane) -> bool {
 	true
 }
 
-pub fn clip_hourglass(source: &Winding, pass: &Winding, target: &Winding) -> Option<Winding> {
-	let mut target_clipped = target.clone();
+pub fn clip_hourglass(source: &[[N; 3]], pass: &[[N; 3]], target: &[[N; 3]]) -> Option<Option<Winding>> {
+	let mut target_clipped: Option<Winding> = None;
 
-	for i in 0..source.points.len() {
-		let j = (i+1) % source.points.len();
-		for k in 0..pass.points.len() {
-			let l = (k+1) % pass.points.len();
+	for i in 0..source.len() {
+		let j = (i+1) % source.len();
+		for k in 0..pass.len() {
+			let l = (k+1) % pass.len();
 
 			let p1 = plane_through(
-				source.points[i],
-				source.points[j],
-				pass.points[k]);
+				source[i],
+				source[j],
+				pass[k]);
 
 			let p2 = plane_through(
-				source.points[i],
-				pass.points[k],
-				pass.points[l]);
+				source[i],
+				pass[k],
+				pass[l]);
 
 
-			// all_below(&source.points, p1) is true
-			if all_above(&pass.points, p1) {
-				target_clipped = chop_winding(&target_clipped, p1)?;
+			// all_below(&source, p1) is true
+			if all_above(&pass, p1) {
+				target_clipped = chop_winding(
+					if let Some(tw) = &target_clipped { &tw.points[..] } else { target },
+					p1)?.or(target_clipped);
 			}
 
 			// all_above(&pass.points, p2) is true
-			if all_below(&source.points, p2) {
-				target_clipped = chop_winding(&target_clipped, p2)?;
+			if all_below(&source, p2) {
+				target_clipped = chop_winding(
+					if let Some(tw) = &target_clipped { &tw.points[..] } else { target },
+					p2)?.or(target_clipped);
 			}
 		}
 	}

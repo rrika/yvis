@@ -21,7 +21,7 @@ fn write_ppm(name: &String, layers: &[([u8; 3], &Vec<Vec<bool>>)]) {
 		for x in 0..w {
 			let mut color: [u8; 3] = [0; 3];
 			for layer in layers {
-				if layer.1[x][y] {
+				if layer.1[y][x] {
 					color = layer.0;
 					break;
 				}
@@ -50,18 +50,21 @@ fn main() {
 		parse_prt(&prt).unwrap()
 	};
 
-	union_find_leafs(nleafs, &lines);
+	//union_find_leafs(nleafs, &lines);
 	let graph = prtlines_to_graph(nleafs, &lines);
 	let (pvs_fast, pvs) = process_graph(&graph);
 
+	let leaf_pvs_fast = graph.portalvis_to_leafvis(&pvs_fast);
+	let leaf_pvs = graph.portalvis_to_leafvis(&pvs);
+
 	if let Some(mname) = mname {
 		write_ppm(&mname, &[
-			([255, 255, 255], &pvs),
-			([255, 80, 60], &pvs_fast)
+			([255, 255, 255], &leaf_pvs),
+			//([80, 60, 60], &leaf_pvs_fast)
 		]);
 	}
 
-	let cvis = compress_vis(&pvs, &pvs);
+	let cvis = compress_vis(&leaf_pvs_fast, &leaf_pvs_fast);
 
 	let mut ofile = File::create(oname).unwrap();
 	ofile.write_all(&cvis).expect("write failed");

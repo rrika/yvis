@@ -100,6 +100,8 @@ pub fn prtlines_to_graph(nleafs: usize, lines: &Vec<PRTLine>) -> LeafGraph {
 		let pi = graph.portals.len();
 		graph.leaf_from[*src].push(pi+0);
 		graph.leaf_from[*dst].push(pi+1);
+		// println!("leaf[{}] += {}", src, pi+0);
+		// println!("leaf[{}] += {}", dst, pi+1);
 		points.reverse();
 		let plane = plane_through(points[0], points[1], points[2]);
 		let portal_fwd = Portal {
@@ -115,7 +117,9 @@ pub fn prtlines_to_graph(nleafs: usize, lines: &Vec<PRTLine>) -> LeafGraph {
 			leaf_from: *dst,
 			leaf_into: *src
 		};
+		// println!("portals[{}] = {{from: {}, into {}}}", graph.portals.len(), portal_fwd.leaf_from, portal_fwd.leaf_into);
 		graph.portals.push(portal_fwd);
+		// println!("portals[{}] = {{from: {}, into {}}}", graph.portals.len(), portal_bwd.leaf_from, portal_bwd.leaf_into);
 		graph.portals.push(portal_bwd);
 	}
 

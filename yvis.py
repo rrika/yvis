@@ -251,7 +251,7 @@ def main():
 	vmf = bsp.read_ent_data()
 
 	with tempfile.NamedTemporaryFile() as f:
-		subprocess.check_call(["cargo", "run", "--release", "--manifest-path=yvis/Cargo.toml",
+		subprocess.check_call(["cargo", "run", "--bin", "yvis", "--release",
 			args.prtfile,
 			f.name])
 		lump_visibility = f.read()
@@ -270,7 +270,7 @@ def main():
 	bsp.lumps[BSP_LUMPS.VISIBILITY].data = lump_visibility
 	#bsp.get_lump(BSP_LUMPS.LEAFMINDISTTOWATER).data = lump_waterdist
 
-	bsp.save(os.path.basename(args.bspfile)+".withvis")
+	bsp.save(os.path.splitext(args.bspfile)[0]+"_yvis.bsp")
 
 if __name__ == '__main__':
 	main()
