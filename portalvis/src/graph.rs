@@ -1,5 +1,5 @@
 use crate::bits::DenseBits;
-use crate::geometry::Winding;
+use crate::winding::Winding;
 use crate::geometry::Plane;
 use std::collections::HashMap;
 

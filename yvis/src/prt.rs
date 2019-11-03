@@ -1,5 +1,5 @@
 use portalvis::graph::Portal;
-use portalvis::geometry::Winding;
+use portalvis::winding::Winding;
 use portalvis::geometry::plane_through;
 use portalvis::graph::LeafGraph;
 use std::collections::HashMap;
@@ -127,7 +127,7 @@ pub fn prtlines_to_graph(nleafs: usize, lines: &Vec<PRTLine>) -> LeafGraph {
 }
 
 #[cfg(test)]
-use portalvis::graph::process_graph;
+use portalvis::flow::process_graph;
 
 #[test]
 fn prttest() {
@@ -150,30 +150,30 @@ fn prttest() {
 	process_graph(&graph);
 
 	println!("fm see 0");
-	portalvis::geometry::lpsolve_see_through_portals(&vec![
+	portalvis::winding::lpsolve_see_through_portals(&vec![
 			&graph.portals[0].winding
 	]);
 	println!("fm see 0-1");
-	portalvis::geometry::lpsolve_see_through_portals(&vec![
+	portalvis::winding::lpsolve_see_through_portals(&vec![
 			&graph.portals[0].winding,
 			&graph.portals[1].winding
 	]);
 	println!("fm see 0-2");
-	portalvis::geometry::lpsolve_see_through_portals(&vec![
+	portalvis::winding::lpsolve_see_through_portals(&vec![
 			&graph.portals[0].winding,
 			&graph.portals[2].winding,
 	]);
 	println!("fm see 2-4");
-	portalvis::geometry::lpsolve_see_through_portals(&vec![
+	portalvis::winding::lpsolve_see_through_portals(&vec![
 			&graph.portals[0].winding,
 			&graph.portals[2].winding,
 	]);
 	println!("fm see 0-2-4");
-	portalvis::geometry::lpsolve_see_through_portals(&vec![
+	portalvis::winding::lpsolve_see_through_portals(&vec![
 			&graph.portals[0].winding,
 			&graph.portals[2].winding,
 			&graph.portals[4].winding
 	]);
 
-	assert!(false);
+	//assert!(false);
 }

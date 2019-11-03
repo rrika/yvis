@@ -52,7 +52,8 @@ fn main() {
 
 	//union_find_leafs(nleafs, &lines);
 	let graph = prtlines_to_graph(nleafs, &lines);
-	let (pvs_fast, pvs) = process_graph(&graph);
+	//let (pvs_fast, pvs) = process_graph(&graph);
+	let (pvs_fast, pvs) = portalvis::report::report(&graph);
 
 	let leaf_pvs_fast = graph.portalvis_to_leafvis(&pvs_fast);
 	let leaf_pvs = graph.portalvis_to_leafvis(&pvs);
@@ -64,7 +65,7 @@ fn main() {
 		]);
 	}
 
-	let cvis = compress_vis(&leaf_pvs_fast, &leaf_pvs_fast);
+	let cvis = compress_vis(&leaf_pvs, &leaf_pvs);
 
 	let mut ofile = File::create(oname).unwrap();
 	ofile.write_all(&cvis).expect("write failed");

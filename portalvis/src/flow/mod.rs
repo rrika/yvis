@@ -1,19 +1,20 @@
 pub mod limiter;
 pub mod mightsee;
 
-use crate::graph::Portal;
-use crate::graph::LeafGraph;
 use crate::bits::BitVecLike;
 use crate::bits::chunked_convert;
-use crate::bits::SetBit;
+use crate::bits::ChunkedBits;
 use crate::bits::DenseBits;
+use crate::bits::SetBit;
+use crate::flow::limiter::*;
+use crate::flow::mightsee::Mightsee;
+use crate::flow::mightsee::MightseeResult;
 use crate::geometry::all_above;
 use crate::geometry::all_below;
 use crate::geometry::N;
 use crate::geometry::ndot;
-use crate::flow::mightsee::Mightsee;
-use crate::flow::mightsee::MightseeResult;
-use crate::flow::limiter::*;
+use crate::graph::LeafGraph;
+use crate::graph::Portal;
 use crate::report;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
@@ -26,8 +27,9 @@ use crossbeam::epoch::{self as epoch, Atomic, Owned, Guard};
 
 pub struct Work<RowType> {
 	approx: Vec<Atomic<RowType>>,
-	visible:  AtomicU64,
-	visited:  AtomicU64,
+	// visible:  AtomicU64,
+	// wasted:  AtomicU64,
+	// visited:  AtomicU64,
 }
 
 impl<R> Work<R> {
@@ -38,8 +40,10 @@ impl<R> Work<R> {
 		self.approx[a].store(Owned::new(data), Ordering::SeqCst)
 	}
 	fn report_traversal(&self, t: &report::Traversal) {
-		self.visible.fetch_add(t.result as u64, Ordering::SeqCst);
-		self.visited.fetch_add(t.steps as u64, Ordering::SeqCst);
+		// println!("{:?}", t);
+		// self.visible.fetch_add(t.result as u64, Ordering::SeqCst);
+		// self.wasted.fetch_add(t.wasted as u64, Ordering::SeqCst);
+		// self.visited.fetch_add(t.steps as u64, Ordering::SeqCst);
 	}
 }
 
@@ -120,17 +124,16 @@ fn front_check_dist(p: &Portal, q: &Portal, d: N, e: N) -> bool {
 	!all_above(&p.winding.points, q.plane.with_dist(e))
 }
 
-fn calc_portalfront(
+pub fn calc_portalfront(
 	graph:        &LeafGraph,
 	portalfront:  &mut Vec<DenseBits>,
-	newdistances: &Vec<(N, N)>,
-	mode2:        bool
+	newdistances: Option<&Vec<(N, N)>>
 ) {
 	let nportals = graph.portals.len();
 	for i in 0..nportals {
 		for j in 0..nportals {
 			//print!("front check {} {} ", i, j);
-			let f = i != j && if mode2 {
+			let f = i != j && if let Some(newdistances) = newdistances {
 				front_check_dist(&graph.portals[i], &graph.portals[j],
 					newdistances[i].0,
 					newdistances[i].1)
@@ -164,7 +167,7 @@ pub fn flood(
 	}
 }
 
-fn calc_portalflood(
+pub fn calc_portalflood(
 	graph:        &LeafGraph,
 	portalflood:  &mut Vec<DenseBits>,
 	portalfront:  &Vec<DenseBits>
@@ -182,7 +185,7 @@ pub fn recursive_leaf_flow<
 	T: Limiter<'a> + Clone,
 	Filter:  BitVecLike,
 	Confirm: BitVecLike + SetBit,
-	Might:   Mightsee<Filter, Confirm>
+	//Might:   Mightsee<Filter, Confirm>
 >(
 	graph: &'a LeafGraph,
 	work: &Work<Filter>,
@@ -190,9 +193,10 @@ pub fn recursive_leaf_flow<
 
 	confirmsee: &mut Confirm,
 	leaf: usize,
-	mightsee: &Might,
+	//mightsee: &Might,
+	mightsee: &ChunkedBits,
 	depth: usize
-) -> (usize, usize) {
+) -> (usize, usize, bool) where ChunkedBits: Mightsee<Filter, Confirm> {
 	let mut any_confirmed = false;
 	let mut visited = 0;
 	let mut wasted = 0;
@@ -204,9 +208,11 @@ pub fn recursive_leaf_flow<
 			//println!("    may not see");
 			continue }
 
-		let local_mightsee: Might;
+		//let local_mightsee: Might;
+		let local_mightsee: ChunkedBits;
 
-		let rnms: Option<&Might> = match {
+		let now = Instant::now();
+		let rnms: Option<&ChunkedBits> = match {
 			let guard = &epoch::pin();
 			let localsee = work.get_row(p, guard);
 			mightsee.filter_for_unexplored(localsee, confirmsee)
@@ -223,15 +229,17 @@ pub fn recursive_leaf_flow<
 				Some(&local_mightsee)
 			}
 		};
+		let mightsee_time = now.elapsed();
 
 		if let Some(new_limiter) = limiter.traverse(graph, p) {
+			let limiter_time = now.elapsed() - mightsee_time;
 			//println!("   {{");
 			if !confirmsee[p] {
 				any_confirmed = true;
 			}
 			confirmsee.set(p);
 			if let Some(new_mightsee) = rnms {
-				let (sub_visited, sub_wasted) = recursive_leaf_flow(
+				let (sub_visited, sub_wasted, sub_anyconfirmed) = recursive_leaf_flow(
 					graph,
 					&work,
 					new_limiter,
@@ -242,11 +250,23 @@ pub fn recursive_leaf_flow<
 				);
 				visited += sub_visited;
 				wasted += sub_wasted;
+				any_confirmed |= sub_anyconfirmed;
 			}
 			//println!("   }}");
+
+			// print!("depth={} mightsee={} {}ns {}ns",
+			// 	depth,
+			// 	mightsee.0.len()*64,
+			// 	mightsee_time.as_nanos() as u64,
+			// 	limiter_time.as_nanos() as u64);
+			// limiter.stats();
 		}
 	}
-	return (visited+1, wasted + (any_confirmed as usize))
+	return (
+		visited+1,
+		if any_confirmed { wasted } else { wasted+1 },
+		any_confirmed
+	)
 }
 
 pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>+Clone, F: Fn(usize)->T>(
@@ -259,6 +279,7 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>+Clone, F: Fn(usize)->T>(
 {
 	let mut npapprox = 0;
 	let mut nvisited = 0;
+	let mut nwasted = 0;
 	let nportals = graph.portals.len();
 	let mut basevis: DenseBits = DenseBits(Vec::new());
 	basevis.0.resize((nportals + 63)/64, 0); // nn
@@ -268,7 +289,7 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>+Clone, F: Fn(usize)->T>(
 			work.get_row(*base, guard).clone()
 		};
 		npapprox = mightsee.count_ones();
-		let (snvisited, _snwasted) = recursive_leaf_flow(
+		let (snvisited, snwasted, _sanyconf) = recursive_leaf_flow(
 			&graph,
 			&work,
 			glimiter(*base),
@@ -280,11 +301,13 @@ pub fn recursive_leaf_flow_simple<'a, T: Limiter<'a>+Clone, F: Fn(usize)->T>(
 			0
 		);
 		nvisited += snvisited;
+		nwasted += snwasted;
 	}
 	let report = report::Traversal {
 		approx:  npapprox,
 		steps:   nvisited-1,
 		result:  basevis.count_ones(),
+		wasted:  nwasted,
 		depth:   0
 	};
 	(basevis, report)
@@ -308,13 +331,17 @@ fn winding_limiter_for<'a>(
 }
 
 fn workunit(graph: &LeafGraph, work: &Work<DenseBits>, p: usize) {
-	let limiter_w = winding_limiter_for(graph, p, None); // Some(&newdistances)
+	let pt = &graph.portals[p];
+	let _limiter_w = winding_limiter_for(graph, p, None); // Some(&newdistances)
+	let _limiter_chop = ChopLimiter::<crate::axisgeom::Cuboid>(pt.plane, (&pt.winding).into(), None);
 	// let limiter_fm = FMLimiter(vec![&graph.portals[p].winding]);
 	// let limiter =  (limiter_w, limiter_fm);
+	// let limiter = CheckLimiter(_limiter_chop, Some(_limiter_w));
+	let limiter = _limiter_chop;
+	// let limiter = _limiter_w;
 
-	// let now = Instant::now();
 	let (row, traversal) = recursive_leaf_flow_simple(
-		&graph, &work, |_| limiter_w.clone(), &[p]);
+		&graph, &work, |_| limiter.clone(), &[p]);
 	// let (_, visited_w2) = recursive_leaf_flow_simple(
 	// 	&graph, &work, limiter_w2, p);
 	// let (row, visited) = recursive_leaf_flow_simple(
@@ -326,7 +353,7 @@ fn workunit(graph: &LeafGraph, work: &Work<DenseBits>, p: usize) {
 
 }
 
-fn calc_portalvis(
+pub fn calc_portalvis(
 	graph:        &LeafGraph,
 	portalvis:    &mut Vec<DenseBits>,
 	portalflood:  &Vec<DenseBits>
@@ -380,8 +407,9 @@ fn calc_portalvis(
 
 		let work = Work {
 			approx: sub_portalvis,
-			visible: 0.into(),
-			visited: 0.into(),
+			// visible: 0.into(),
+			// wasted: 0.into(),
+			// visited: 0.into(),
 		};
 
 		// println!("subgraph {}: pre pass", i);
@@ -389,15 +417,17 @@ fn calc_portalvis(
 		// 	&graph, &work, |p|winding_limiter_for(&*graph, p, None),
 		// 	sub_local_indices);
 
+		let nthreads = 4;
+
 		println!("process_graph: subgraph {}: main pass", i);
 		let now = Instant::now();
 		thread::scope(|s| {
 			let rwork = &work;
 			let rsubgraph = &sub_graph;
-			for i in 0..4 {
+			for i in 0..nthreads {
 				s.spawn(move |_| {
 					for p in 0..sub_local_indices.len() {
-						if p % 4 == i {
+						if p % nthreads == i {
 							// print!("recursive_leaf_flow {:?}/{:?}\n", p, nlportals);
 							workunit(rsubgraph, rwork, sub_local_indices[p]);
 						}
@@ -417,10 +447,11 @@ fn calc_portalvis(
 			std::mem::swap(&mut portalvis[p], &mut owned_rows[p]);
 		}
 
-		println!("{} {}",
-			work.visible.load(Ordering::Acquire),
-			work.visited.load(Ordering::Acquire)
-		);
+		// println!("process_graph: stats: visible={} wasted={} visited={}",
+		// 	work.visible.load(Ordering::Acquire),
+		// 	work.wasted.load(Ordering::Acquire),
+		// 	work.visited.load(Ordering::Acquire)
+		// );
 	}
 }
 
@@ -431,12 +462,11 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<DenseBits>, Vec<DenseBits
 
 	println!("process_graph: init  nportals={}", nportals);
 
-	let mut newdistances: Vec<(N, N)> = Vec::new();
-	for i in 0..nportals {
-		let dd = distances_for(graph, i);
-		//println!("pplane +{:?}:-{:?}", dd.0-plane.3, plane.3-dd.1);
-		newdistances.push(dd);
-	}
+	// let mut newdistances: Vec<(N, N)> = Vec::new();
+	// for i in 0..nportals {
+	// 	let dd = distances_for(graph, i);
+	// 	newdistances.push(dd);
+	// }
 
 	let mkbitvec = |n| { let mut v = Vec::new(); v.resize((n+63)/64, 0u64); DenseBits(v) };
 
@@ -447,7 +477,7 @@ pub fn process_graph<'a>(graph: &'a LeafGraph) -> (Vec<DenseBits>, Vec<DenseBits
 
 	println!("process_graph: portalfront");
 	let now = Instant::now();
-	calc_portalfront(&graph, &mut portalfront, &newdistances, false);
+	calc_portalfront(&graph, &mut portalfront, None); //Some(&newdistances));
 	println!("process_graph: portalfront took {}ms", now.elapsed().as_micros() as u64 as f64 / 1000.0);
 
 

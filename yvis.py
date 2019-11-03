@@ -49,6 +49,7 @@ def plain_parser():
 	parser = argparse.ArgumentParser()
 	parser.add_argument('bspfile')
 	parser.add_argument('--prt', metavar='<prtfile>', dest='prtfile')
+	parser.add_argument('--ref', metavar='<bspfile>', dest='reffile')
 	if need_game_files:
 		parser.add_argument('--game', metavar='<directory>', dest='game')
 	return parser
@@ -211,9 +212,62 @@ def build_cluster_table(dleafs):
 # 		z.append(dvertexes[3*b+2])
 # 	return min(x), max(x), min(y), max(y), min(z), max(z)
 
+def steal_lumps(bsp, ref, lumpindices):
+	for lumpindex in lumpindices:
+		bsp.lumps[lumpindex].data = ref.lumps[lumpindex].data
+
+def steal_lumps_common(bsp, ref):
+	steal_lumps(bsp, ref, [
+		BSP_LUMPS.LEAFS,
+		BSP_LUMPS.VISIBILITY,
+		BSP_LUMPS.LEAFMINDISTTOWATER,
+		BSP_LUMPS.DISPINFO,
+		BSP_LUMPS.LEAF_AMBIENT_INDEX_HDR,
+		BSP_LUMPS.LEAF_AMBIENT_INDEX,
+		BSP_LUMPS.LEAF_AMBIENT_LIGHTING_HDR,
+		BSP_LUMPS.LEAF_AMBIENT_LIGHTING
+	])
+
+	bsp.lumps[BSP_LUMPS.PHYSLEVEL].version = 16
+
+def lump_compare(a, b):
+	if len(a.data) != len(b.data):
+		status = "LENGTH DIFFERS"
+	elif a.data != b.data:
+		status = "DATA DIFFERS"
+	elif a.ident != b.ident:
+		status = "IDENT DIFFERS"
+	elif a.version != b.version:
+		status = "VERSION DIFFERS"
+	else:
+		status = ""
+	print("{: <30} {:7} {:7} {:7} {:7} {: <12} {: <12} {}".format(
+		aindex.name.lower(),
+		len(a.data), len(b.data),
+		a.version, b.version,
+		repr(a.ident), repr(b.ident),
+		status))
+
+def reassemble(src, ref, dst):
+	bsp  = srctools.bsp.BSP(src)
+	ref = srctools.bsp.BSP(ref)
+	print("lumps only in src:", set(bsp.lumps.keys()) - set(ref.lumps.keys()))
+	print("lumps only in ref:", set(ref.lumps.keys()) - set(bsp.lumps.keys()))
+
+	for lumpindex, lump in bsp.lumps.items():
+		dump_compare(lump, ref.lumps[lumpindex])
+
+	print("---")
+	steal_lumps_common(bsp, ref)
+	print("---")
+	for lumpindex, lump in bsp.lumps.items():
+		dump_compare(lump, ref.lumps[lumpindex])
+
+	bsp.save(dst)
+
 def main():
 	args = plain_parser().parse_args()
-	bsp = srctools.bsp.BSP(args.bspfile, srctools.bsp.VERSIONS.PORTAL_2)
+	bsp = srctools.bsp.BSP(args.bspfile)
 
 	if not hasattr(args, "prtfile") or not args.prtfile:
 		if ".bsp" in args.bspfile:
@@ -265,6 +319,10 @@ def main():
 	#lump_waterdist = calc_distance_from_leaves_to_water()
 
 	lump_leafs = b"".join(struct.pack(dleaf_fmt, *l) for l in dleafs)
+
+	if args.reffile:
+		ref = srctools.bsp.BSP(args.reffile)
+		steal_lumps_common(bsp, ref)
 
 	bsp.lumps[BSP_LUMPS.LEAFS].data = lump_leafs
 	bsp.lumps[BSP_LUMPS.VISIBILITY].data = lump_visibility
