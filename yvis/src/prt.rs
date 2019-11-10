@@ -58,6 +58,17 @@ pub fn parse_prt(data: &str) -> Result<(usize, usize, Vec<PRTLine>), &'static st
 	Ok((nleafs_i, nleafs_implicit, prtlines))
 }
 
+pub fn print_prt(nclusters: usize, prtlines: &Vec<PRTLine>) {
+	println!("PRT1\n{}\n{}", nclusters, prtlines.len());
+	for line in prtlines {
+		print!("{} {} {} ", line.2.len(), line.0, line.1);
+		for p in &line.2 {
+			print!("({} {} {} ) ", p[0], p[1], p[2]);
+		}
+		println!("");
+	}
+}
+
 pub fn union_find_leafs(nleafs: usize, lines: &Vec<PRTLine>) {
 	let mut repr: Vec<usize> = Vec::new();
 	for i in 0..nleafs {

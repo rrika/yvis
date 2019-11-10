@@ -34,7 +34,30 @@ fn write_ppm(name: &String, layers: &[([u8; 3], &Vec<Vec<bool>>)]) {
 	mfile.write_all(&blob).expect("write failed");
 }
 
-fn main1() {
+fn load_prt(fname: &str) -> (usize, Vec<PRTLine>) {
+	if fname.ends_with(".prt") {
+		let (nleafs, _, lines) = {
+			let mut file = File::open(fname).unwrap();
+			let mut prt = String::new();
+			file.read_to_string(&mut prt).unwrap();
+			parse_prt(&prt).unwrap()
+		};
+		(nleafs, lines)
+	} else if fname.ends_with(".bsp") {
+		let bspdata = {
+			let mut file = File::open(fname).unwrap();
+			let mut blob = Vec::<u8>::new();
+			file.read_to_end(&mut blob).unwrap();
+			bsp::extract_relevant_data(&blob)
+		};
+		let lines = bsp::redo_prt(&bspdata);
+		(bspdata.leafs.iter().map(|l|l.cluster as usize).filter(|c|*c!=!0).max().unwrap_or(0)+1, lines)
+	} else {
+		panic!("either a .prt or .bsp file is required")
+	}
+}
+
+fn main() {
 	let (fname, oname, mname) = {
 		let mut args = env::args();
 		args.next().unwrap();
@@ -43,12 +66,7 @@ fn main1() {
 		 args.next())
 	};
 
-	let (nleafs, _, lines) = {
-		let mut file = File::open(fname).unwrap();
-		let mut prt = String::new();
-		file.read_to_string(&mut prt).unwrap();
-		parse_prt(&prt).unwrap()
-	};
+	let (nleafs, lines) = load_prt(&fname);
 
 	//union_find_leafs(nleafs, &lines);
 	let graph = prtlines_to_graph(nleafs, &lines);
@@ -69,27 +87,4 @@ fn main1() {
 
 	let mut ofile = File::create(oname).unwrap();
 	ofile.write_all(&cvis).expect("write failed");
-}
-
-fn main() {
-	let mut args = env::args(); args.next();
-	let bspname = args.next().unwrap();
-	let bspdata = {
-		let mut file = File::open(bspname).unwrap();
-		let mut blob = Vec::<u8>::new();
-		file.read_to_end(&mut blob).unwrap();
-		bsp::extract_relevant_data(&blob)
-	};
-	let mut prtlines = bsp::redo_prt(&bspdata);
-	prtlines.sort_by_key(|line| (line.0, !line.1));
-	println!("PRT1");
-	println!("{}", bspdata.leafs.len());
-	println!("{}", prtlines.len());
-	for line in prtlines {
-		print!("{} {} {} ", line.2.len(), line.0, line.1);
-		for p in line.2 {
-			print!("({} {} {} ) ", p[0], p[1], p[2]);
-		}
-		println!("");
-	}
 }

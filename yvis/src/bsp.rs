@@ -15,7 +15,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 pub struct BspNode { plane: i32, child0: i32, child1: i32 }
 pub struct BspPlane(f32, f32, f32, f32);
-pub struct BspLeaf { contents: i32, cluster: i16 }
+pub struct BspLeaf { contents: i32, pub cluster: i16 }
 pub struct BspData {
 	pub nodes:  Vec<BspNode>,
 	pub planes: Vec<BspPlane>,
@@ -256,5 +256,6 @@ pub fn redo_prt(bspdata: &BspData) -> Vec<PRTLine> {
 			}
 		}
 	}
+	prtlines.sort_by_key(|line| (line.0, !line.1));
 	prtlines
 }
