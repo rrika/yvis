@@ -2,8 +2,8 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
-use portalvis::*;
 
+mod bsp;
 mod prt;
 mod pvsrle;
 use prt::*;
@@ -34,7 +34,7 @@ fn write_ppm(name: &String, layers: &[([u8; 3], &Vec<Vec<bool>>)]) {
 	mfile.write_all(&blob).expect("write failed");
 }
 
-fn main() {
+fn main1() {
 	let (fname, oname, mname) = {
 		let mut args = env::args();
 		args.next().unwrap();
@@ -69,4 +69,27 @@ fn main() {
 
 	let mut ofile = File::create(oname).unwrap();
 	ofile.write_all(&cvis).expect("write failed");
+}
+
+fn main() {
+	let mut args = env::args(); args.next();
+	let bspname = args.next().unwrap();
+	let bspdata = {
+		let mut file = File::open(bspname).unwrap();
+		let mut blob = Vec::<u8>::new();
+		file.read_to_end(&mut blob).unwrap();
+		bsp::extract_relevant_data(&blob)
+	};
+	let mut prtlines = bsp::redo_prt(&bspdata);
+	prtlines.sort_by_key(|line| (line.0, !line.1));
+	println!("PRT1");
+	println!("{}", bspdata.leafs.len());
+	println!("{}", prtlines.len());
+	for line in prtlines {
+		print!("{} {} {} ", line.2.len(), line.0, line.1);
+		for p in line.2 {
+			print!("({} {} {} ) ", p[0], p[1], p[2]);
+		}
+		println!("");
+	}
 }

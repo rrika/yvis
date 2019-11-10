@@ -5,7 +5,7 @@ use portalvis::graph::LeafGraph;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Default)]
-pub struct PRTLine(usize, usize, Vec<[f32; 3]>);
+pub struct PRTLine(pub usize, pub usize, pub Vec<[f64; 3]>);
 
 pub fn parse_prt(data: &str) -> Result<(usize, usize, Vec<PRTLine>), &'static str> {
 
@@ -30,7 +30,7 @@ pub fn parse_prt(data: &str) -> Result<(usize, usize, Vec<PRTLine>), &'static st
 		let leaf_a = nlab.next().ok_or("prt line missing leaf_a")?;
 		let leaf_b = nlab.next().ok_or("prt line missing leaf_b")?;
 
-		let mut winding = Vec::<[f32; 3]>::new();
+		let mut winding = Vec::<[f64; 3]>::new();
 
 		for _i in 0..npoints.parse::<usize>().map_err(|_| "npoints not an integer")? {
 			// expected format is (x y z ) with space after the z

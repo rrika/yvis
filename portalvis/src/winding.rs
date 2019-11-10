@@ -24,6 +24,10 @@ impl PlaneChoppable for [[N; 3]] {
 }
 
 pub fn chop_winding(w: &[[N; 3]], p: Plane) -> Option<Option<Winding>> {
+	// None    None
+	// All     Some(None)
+	// Some(x) Some(Some(x))
+
 	//println!("chop_winding {:?} {:?}", p, w);
 	let mut not_all = false;
 	for point in w {
@@ -77,7 +81,19 @@ pub fn chop_winding(w: &[[N; 3]], p: Plane) -> Option<Option<Winding>> {
 	}
 	//println!("  chop -> {:?}", nw);
 	if nw.len() >= 3 {
-		Some(Some(Winding{points: nw}))
+		// let mut areaish: N = 0.0 as N;
+		// for i in 0..nw.len() {
+		// 	let c = nw[(i+0)%nw.len()];
+		// 	let d = nw[(i+1)%nw.len()];
+		// 	let e = nw[(i+2)%nw.len()];
+		// 	let n = ncross(nsub(d, c), nsub(d, e));
+		// 	areaish += n[0]*n[0]+n[1]*n[1]+n[2]*n[2];
+		// }
+		// if areaish > 0.0 {
+			Some(Some(Winding{points: nw}))
+		// } else {
+		// 	None
+		// }
 	} else {
 		None
 	}
